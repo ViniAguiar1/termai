@@ -2,11 +2,13 @@ package executor
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/creack/pty"
 )
@@ -47,7 +49,7 @@ func RunWithPTY(command string) Result {
 		ExitCode: 0,
 	}
 
-	if readErr != nil {
+	if readErr != nil && !errors.Is(readErr, syscall.EIO) {
 		result.Error = readErr.Error()
 		result.ExitCode = 1
 		return result
