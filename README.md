@@ -33,6 +33,7 @@ Build a developer-focused terminal that can:
 - Placeholder detection for commands that need manual editing
 - Unit tests for analyzer, executor and CLI safety helpers
 - Linting configuration
+- GitHub Actions CI for tests, vet, race detection and linting
 
 ## 📦 Setup
 
@@ -74,6 +75,5 @@ termAI should detect that `nvm` is not loaded in the current executor and sugges
 
 - Replace raw stdin scanning with a readline-style input layer for history and arrow-key support
 - Add OpenAI-powered analysis for unknown or complex errors
-- Add GitHub Actions CI
 - Expand analyzer rules and safety metadata
 - Improve command suggestions that require user-provided values
