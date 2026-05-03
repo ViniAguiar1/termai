@@ -48,8 +48,10 @@ var rootCmd = &cobra.Command{
 				fmt.Print(result.Output)
 			}
 
-			if result.Error != "" {
+			if result.Error != "" && result.Output == "" {
 				fmt.Println(errorColor("❌ Erro:"), result.Error)
+			} else if result.Error != "" {
+				fmt.Println(result.Error)
 			}
 
 			suggestion := analyzer.Analyze(result.Error)
