@@ -69,6 +69,7 @@ var rootCmd = &cobra.Command{
 				}
 			}
 		}
+		fmt.Println("────────────────────────")
 	},
 }
 
