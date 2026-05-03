@@ -55,7 +55,7 @@ func Analyze(errorOutput string) *Suggestion {
 	}
 
 	// módulo não encontrado (Node)
-	if strings.Contains(err, "module not found") {
+	if strings.Contains(err, "module not found") || strings.Contains(err, "cannot find module") {
 		return &Suggestion{
 			Title:       "Módulo não encontrado",
 			Description: "Dependência pode não estar instalada",
