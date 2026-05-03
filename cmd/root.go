@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"termai/internal/analyzer"
-	"termai/internal/executor"
+	"github.com/ViniAguiar1/termai/internal/analyzer"
+	"github.com/ViniAguiar1/termai/internal/executor"
 
 	"github.com/spf13/cobra"
 )

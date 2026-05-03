@@ -1,5 +1,4 @@
-module termai
-
+module github.com/ViniAguiar1/termai
 go 1.25.5
 
 require (
