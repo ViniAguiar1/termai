@@ -19,8 +19,9 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "termai",
-	Short: "AI-powered terminal assistant",
+	Use:     "termai",
+	Short:   "AI-powered terminal assistant",
+	Version: appVersion,
 	Run: func(cmd *cobra.Command, args []string) {
 		reader, err := newLineReader()
 		if err != nil {

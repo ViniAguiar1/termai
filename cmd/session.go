@@ -22,7 +22,7 @@ func (s *session) run() error {
 	fmt.Println("Digite um comando (ou 'exit' para sair)")
 
 	for {
-		input, err := s.reader.ReadLine(promptColor("⚡ termAI ❯ "))
+		input, err := s.reader.ReadLine(buildPrompt())
 		if err != nil {
 			if err == io.EOF {
 				fmt.Println()
