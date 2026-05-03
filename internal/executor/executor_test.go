@@ -45,3 +45,14 @@ func TestRunAndUpdateSessionPersistsEnvironment(t *testing.T) {
 		t.Fatalf("Output = %q, want %q", next.Output, "hello")
 	}
 }
+
+func TestRunWithPTYBehavesLikeTerminal(t *testing.T) {
+	got := RunWithPTY("test -t 1 && printf tty")
+	if got.ExitCode != 0 {
+		t.Fatalf("ExitCode = %d, want 0", got.ExitCode)
+	}
+
+	if got.Output != "tty" {
+		t.Fatalf("Output = %q, want %q", got.Output, "tty")
+	}
+}

@@ -4,6 +4,7 @@ go 1.25.5
 
 require (
 	github.com/chzyer/readline v1.5.1
+	github.com/creack/pty v1.1.24
 	github.com/spf13/cobra v1.10.2
 )
 

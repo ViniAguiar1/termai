@@ -2,10 +2,13 @@ package executor
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
+
+	"github.com/creack/pty"
 )
 
 type Result struct {
@@ -21,6 +24,46 @@ var (
 
 func Run(command string) Result {
 	return runCommand(command)
+}
+
+func RunWithPTY(command string) Result {
+	cmd := exec.Command("sh", "-c", command)
+	cmd.Env = interactiveEnv()
+
+	ptmx, err := pty.Start(cmd)
+	if err != nil {
+		return Result{
+			Error:    err.Error(),
+			ExitCode: 1,
+		}
+	}
+	defer func() { _ = ptmx.Close() }()
+
+	output, readErr := io.ReadAll(ptmx)
+	waitErr := cmd.Wait()
+
+	result := Result{
+		Output:   string(output),
+		ExitCode: 0,
+	}
+
+	if readErr != nil {
+		result.Error = readErr.Error()
+		result.ExitCode = 1
+		return result
+	}
+
+	if waitErr != nil {
+		if exitErr, ok := waitErr.(*exec.ExitError); ok {
+			result.ExitCode = exitErr.ExitCode()
+		} else {
+			result.ExitCode = 1
+		}
+
+		result.Error = result.Output
+	}
+
+	return result
 }
 
 func RunAndUpdateSession(command string) Result {
@@ -94,6 +137,18 @@ func mergedEnv() []string {
 	}
 
 	return merged
+}
+
+func interactiveEnv() []string {
+	env := mergedEnv()
+
+	for _, item := range env {
+		if strings.HasPrefix(item, "TERM=") {
+			return env
+		}
+	}
+
+	return append(env, "TERM=xterm-256color")
 }
 
 func updateSessionEnv(raw string) {

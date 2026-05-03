@@ -47,7 +47,7 @@ func (s *session) run() error {
 }
 
 func (s *session) handleCommand(input string) {
-	result := executor.Run(input)
+	result := executor.RunWithPTY(input)
 
 	if result.Output != "" {
 		fmt.Print(result.Output)
@@ -59,7 +59,12 @@ func (s *session) handleCommand(input string) {
 		fmt.Println(result.Error)
 	}
 
-	suggestion := analyzer.AnalyzeCommand(input, result.Error)
+	errorOutput := result.Error
+	if errorOutput == "" && result.ExitCode != 0 {
+		errorOutput = result.Output
+	}
+
+	suggestion := analyzer.AnalyzeCommand(input, errorOutput)
 	if suggestion == nil {
 		return
 	}
