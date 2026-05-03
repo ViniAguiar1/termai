@@ -2,9 +2,19 @@ package analyzer
 
 import "strings"
 
+type RiskLevel string
+
+const (
+	RiskLow    RiskLevel = "low"
+	RiskMedium RiskLevel = "medium"
+	RiskHigh   RiskLevel = "high"
+)
+
 type Action struct {
-	Label   string
-	Command string
+	Label                string
+	Command              string
+	Risk                 RiskLevel
+	RequiresConfirmation bool
 }
 
 type Suggestion struct {
@@ -22,9 +32,19 @@ func Analyze(errorOutput string) *Suggestion {
 			Title:       "Disco cheio detectado",
 			Description: "Seu sistema pode estar sem espaço disponível",
 			Actions: []Action{
-				{Label: "Verificar espaço em disco", Command: "df -h"},
-				{Label: "Limpar cache do sistema (Mac)", Command: "rm -rf ~/Library/Caches/*"},
-				{Label: "Limpar cache do npm", Command: "npm cache clean --force"},
+				{Label: "Verificar espaço em disco", Command: "df -h", Risk: RiskLow},
+				{
+					Label:                "Limpar cache do sistema (Mac)",
+					Command:              "rm -rf ~/Library/Caches/*",
+					Risk:                 RiskHigh,
+					RequiresConfirmation: true,
+				},
+				{
+					Label:                "Limpar cache do npm",
+					Command:              "npm cache clean --force",
+					Risk:                 RiskMedium,
+					RequiresConfirmation: true,
+				},
 			},
 		}
 	}
@@ -35,8 +55,8 @@ func Analyze(errorOutput string) *Suggestion {
 			Title:       "Comando não encontrado",
 			Description: "O comando digitado não existe no sistema",
 			Actions: []Action{
-				{Label: "Verificar se o comando está correto", Command: ""},
-				{Label: "Instalar a ferramenta necessária", Command: ""},
+				{Label: "Verificar se o comando está correto", Command: "", Risk: RiskLow},
+				{Label: "Instalar a ferramenta necessária", Command: "", Risk: RiskLow},
 			},
 		}
 	}
@@ -47,9 +67,14 @@ func Analyze(errorOutput string) *Suggestion {
 			Title:       "Porta já está em uso",
 			Description: "Outro processo já está utilizando essa porta",
 			Actions: []Action{
-				{Label: "Listar processos na porta", Command: "lsof -i :PORTA"},
-				{Label: "Finalizar processo (kill)", Command: "kill -9 <PID>"},
-				{Label: "Alterar porta da aplicação", Command: ""},
+				{Label: "Listar processos na porta", Command: "lsof -i :PORTA", Risk: RiskLow},
+				{
+					Label:                "Finalizar processo (kill)",
+					Command:              "kill -9 <PID>",
+					Risk:                 RiskHigh,
+					RequiresConfirmation: true,
+				},
+				{Label: "Alterar porta da aplicação", Command: "", Risk: RiskLow},
 			},
 		}
 	}
@@ -60,9 +85,19 @@ func Analyze(errorOutput string) *Suggestion {
 			Title:       "Módulo não encontrado",
 			Description: "Dependência pode não estar instalada",
 			Actions: []Action{
-				{Label: "Instalar dependências (pnpm)", Command: "pnpm install"},
-				{Label: "Instalar dependências (npm)", Command: "npm install"},
-				{Label: "Verificar package.json", Command: ""},
+				{
+					Label:                "Instalar dependências (pnpm)",
+					Command:              "pnpm install",
+					Risk:                 RiskMedium,
+					RequiresConfirmation: true,
+				},
+				{
+					Label:                "Instalar dependências (npm)",
+					Command:              "npm install",
+					Risk:                 RiskMedium,
+					RequiresConfirmation: true,
+				},
+				{Label: "Verificar package.json", Command: "", Risk: RiskLow},
 			},
 		}
 	}
@@ -73,8 +108,18 @@ func Analyze(errorOutput string) *Suggestion {
 			Title:       "Permissão negada",
 			Description: "Você não tem permissão para executar esse comando",
 			Actions: []Action{
-				{Label: "Dar permissão ao arquivo", Command: "chmod +x <arquivo>"},
-				{Label: "Executar com sudo", Command: "sudo <comando>"},
+				{
+					Label:                "Dar permissão ao arquivo",
+					Command:              "chmod +x <arquivo>",
+					Risk:                 RiskMedium,
+					RequiresConfirmation: true,
+				},
+				{
+					Label:                "Executar com sudo",
+					Command:              "sudo <comando>",
+					Risk:                 RiskHigh,
+					RequiresConfirmation: true,
+				},
 			},
 		}
 	}

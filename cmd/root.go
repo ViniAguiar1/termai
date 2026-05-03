@@ -75,15 +75,17 @@ var rootCmd = &cobra.Command{
 					fmt.Println(infoColor("💡 Sugestões:"))
 
 					for i, action := range suggestion.Actions {
-						fmt.Printf("   [%d] %s\n", i+1, action.Label)
+						fmt.Printf("   [%d] %s%s\n", i+1, action.Label, riskSuffix(action))
 					}
 
 					fmt.Println()
 					fmt.Print("Escolha uma ação (Enter para ignorar): ")
 
-					choiceScanner := bufio.NewScanner(os.Stdin)
-					choiceScanner.Scan()
-					choice := strings.TrimSpace(choiceScanner.Text())
+					if !scanner.Scan() {
+						break
+					}
+
+					choice := strings.TrimSpace(scanner.Text())
 
 					if choice != "" {
 						index, err := strconv.Atoi(choice)
@@ -91,17 +93,7 @@ var rootCmd = &cobra.Command{
 							selected := suggestion.Actions[index-1]
 
 							if selected.Command != "" {
-								fmt.Println(infoColor("⚙️ Executando:"), selected.Command)
-
-								execResult := executor.Run(selected.Command)
-
-								if execResult.Output != "" {
-									fmt.Print(execResult.Output)
-								}
-
-								if execResult.ExitCode != 0 {
-									fmt.Println(errorColor("❌ Erro:"), execResult.Error)
-								}
+								runAction(scanner, selected)
 							} else {
 								fmt.Println("Ação não executável.")
 							}
@@ -122,5 +114,67 @@ func Execute() {
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
 		os.Exit(1)
+	}
+}
+
+func runAction(scanner *bufio.Scanner, action analyzer.Action) {
+	if hasPlaceholder(action.Command) {
+		fmt.Println(warnColor("Ação precisa de edição manual:"), action.Command)
+		return
+	}
+
+	if action.RequiresConfirmation && !confirmAction(scanner, action) {
+		fmt.Println("Ação cancelada.")
+		return
+	}
+
+	fmt.Println(infoColor("⚙️ Executando:"), action.Command)
+
+	execResult := executor.Run(action.Command)
+
+	if execResult.Output != "" {
+		fmt.Print(execResult.Output)
+	}
+
+	if execResult.ExitCode != 0 {
+		fmt.Println(errorColor("❌ Erro:"), execResult.Error)
+	}
+}
+
+func hasPlaceholder(command string) bool {
+	return strings.Contains(command, "<") && strings.Contains(command, ">") ||
+		strings.Contains(command, "PORTA")
+}
+
+func confirmAction(scanner *bufio.Scanner, action analyzer.Action) bool {
+	fmt.Printf("Esta ação tem risco %s. Confirmar execução? (s/N): ", riskLabel(action.Risk))
+
+	if !scanner.Scan() {
+		return false
+	}
+
+	answer := strings.ToLower(strings.TrimSpace(scanner.Text()))
+
+	return answer == "s" || answer == "sim" || answer == "y" || answer == "yes"
+}
+
+func riskSuffix(action analyzer.Action) string {
+	if action.Risk == "" || action.Risk == analyzer.RiskLow {
+		return ""
+	}
+
+	return " " + warnColor("[risco: "+riskLabel(action.Risk)+"]")
+}
+
+func riskLabel(risk analyzer.RiskLevel) string {
+	switch risk {
+	case analyzer.RiskHigh:
+		return "alto"
+	case analyzer.RiskMedium:
+		return "medio"
+	case analyzer.RiskLow:
+		return "baixo"
+	default:
+		return "desconhecido"
 	}
 }
