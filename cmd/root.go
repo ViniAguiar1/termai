@@ -8,7 +8,15 @@ import (
 	"github.com/ViniAguiar1/termai/internal/analyzer"
 	"github.com/ViniAguiar1/termai/internal/executor"
 
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
+)
+
+var (
+	promptColor = color.New(color.FgCyan).SprintFunc()
+	errorColor  = color.New(color.FgRed).SprintFunc()
+	infoColor   = color.New(color.FgGreen).SprintFunc()
+	warnColor   = color.New(color.FgYellow).SprintFunc()
 )
 
 var rootCmd = &cobra.Command{
@@ -21,7 +29,7 @@ var rootCmd = &cobra.Command{
 		scanner := bufio.NewScanner(os.Stdin)
 
 		for {
-			fmt.Print("⚡ termAI ❯ ")
+			fmt.Print(promptColor("⚡ termAI ❯ "))
 
 			if !scanner.Scan() {
 				break
@@ -41,7 +49,7 @@ var rootCmd = &cobra.Command{
 			}
 
 			if result.Error != "" {
-				fmt.Println("Erro:", result.Error)
+				fmt.Println(errorColor("❌ Erro:"), result.Error)
 			}
 
 			suggestion := analyzer.Analyze(result.Error)
