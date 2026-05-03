@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/ViniAguiar1/termai/internal/analyzer"
 	"github.com/ViniAguiar1/termai/internal/executor"
@@ -35,7 +37,11 @@ var rootCmd = &cobra.Command{
 				break
 			}
 
-			input := scanner.Text()
+			input := strings.TrimSpace(scanner.Text())
+
+			if input == "" {
+				continue
+			}
 
 			if input == "exit" {
 				fmt.Println("Encerrando termAI...")
@@ -44,16 +50,19 @@ var rootCmd = &cobra.Command{
 
 			result := executor.Run(input)
 
+			// Output
 			if result.Output != "" {
 				fmt.Print(result.Output)
 			}
 
+			// Erro baseado em exit code
 			if result.ExitCode != 0 {
 				fmt.Println(errorColor("❌ Erro:"), result.Error)
 			} else if result.Error != "" {
 				fmt.Println(result.Error)
 			}
 
+			// Análise de erro
 			suggestion := analyzer.Analyze(result.Error)
 
 			if suggestion != nil {
@@ -65,13 +74,47 @@ var rootCmd = &cobra.Command{
 					fmt.Println()
 					fmt.Println(infoColor("💡 Sugestões:"))
 
-					for _, action := range suggestion.Actions {
-						fmt.Println("   →", action)
+					for i, action := range suggestion.Actions {
+						fmt.Printf("   [%d] %s\n", i+1, action.Label)
+					}
+
+					fmt.Println()
+					fmt.Print("Escolha uma ação (Enter para ignorar): ")
+
+					choiceScanner := bufio.NewScanner(os.Stdin)
+					choiceScanner.Scan()
+					choice := strings.TrimSpace(choiceScanner.Text())
+
+					if choice != "" {
+						index, err := strconv.Atoi(choice)
+						if err == nil && index > 0 && index <= len(suggestion.Actions) {
+							selected := suggestion.Actions[index-1]
+
+							if selected.Command != "" {
+								fmt.Println(infoColor("⚙️ Executando:"), selected.Command)
+
+								execResult := executor.Run(selected.Command)
+
+								if execResult.Output != "" {
+									fmt.Print(execResult.Output)
+								}
+
+								if execResult.ExitCode != 0 {
+									fmt.Println(errorColor("❌ Erro:"), execResult.Error)
+								}
+							} else {
+								fmt.Println("Ação não executável.")
+							}
+						} else {
+							fmt.Println("Opção inválida.")
+						}
 					}
 				}
 			}
+
+			// Separador visual (NO LUGAR CERTO)
+			fmt.Println("────────────────────────")
 		}
-		fmt.Println("────────────────────────")
 	},
 }
 
