@@ -6,8 +6,9 @@ import (
 )
 
 type Result struct {
-	Output string
-	Error  string
+	Output   string
+	Error    string
+	ExitCode int
 }
 
 func Run(command string) Result {
@@ -22,12 +23,18 @@ func Run(command string) Result {
 	err := cmd.Run()
 
 	result := Result{
-		Output: out.String(),
-		Error:  stderr.String(),
+		Output:   out.String(),
+		Error:    stderr.String(),
+		ExitCode: 0,
 	}
 
-	if err != nil && result.Error == "" {
-		result.Error = err.Error()
+	if err != nil {
+		// pega exit code real
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			result.ExitCode = exitErr.ExitCode()
+		} else {
+			result.ExitCode = 1
+		}
 	}
 
 	return result

@@ -48,7 +48,7 @@ var rootCmd = &cobra.Command{
 				fmt.Print(result.Output)
 			}
 
-			if result.Error != "" && result.Output == "" {
+			if result.ExitCode != 0 {
 				fmt.Println(errorColor("❌ Erro:"), result.Error)
 			} else if result.Error != "" {
 				fmt.Println(result.Error)
