@@ -55,13 +55,16 @@ var rootCmd = &cobra.Command{
 			suggestion := analyzer.Analyze(result.Error)
 
 			if suggestion != nil {
-				fmt.Println("\n⚠️ ", suggestion.Title)
+				fmt.Println()
+				fmt.Println(warnColor("⚠️ " + suggestion.Title))
 				fmt.Println(suggestion.Description)
 
 				if len(suggestion.Actions) > 0 {
-					fmt.Println("\nSugestões:")
+					fmt.Println()
+					fmt.Println(infoColor("💡 Sugestões:"))
+
 					for _, action := range suggestion.Actions {
-						fmt.Println(" -", action)
+						fmt.Println("   →", action)
 					}
 				}
 			}
