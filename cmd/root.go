@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"termai/internal/analyzer"
 	"termai/internal/executor"
 
 	"github.com/spf13/cobra"
@@ -41,6 +42,20 @@ var rootCmd = &cobra.Command{
 
 			if result.Error != "" {
 				fmt.Println("Erro:", result.Error)
+			}
+
+			suggestion := analyzer.Analyze(result.Error)
+
+			if suggestion != nil {
+				fmt.Println("\n⚠️ ", suggestion.Title)
+				fmt.Println(suggestion.Description)
+
+				if len(suggestion.Actions) > 0 {
+					fmt.Println("\nSugestões:")
+					for _, action := range suggestion.Actions {
+						fmt.Println(" -", action)
+					}
+				}
 			}
 		}
 	},
