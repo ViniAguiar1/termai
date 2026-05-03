@@ -21,7 +21,7 @@ var rootCmd = &cobra.Command{
 		scanner := bufio.NewScanner(os.Stdin)
 
 		for {
-			fmt.Print("termai > ")
+			fmt.Print("⚡ termAI ❯ ")
 
 			if !scanner.Scan() {
 				break
