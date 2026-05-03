@@ -63,7 +63,7 @@ var rootCmd = &cobra.Command{
 			}
 
 			// Análise de erro
-			suggestion := analyzer.Analyze(result.Error)
+			suggestion := analyzer.AnalyzeCommand(input, result.Error)
 
 			if suggestion != nil {
 				fmt.Println()
@@ -95,7 +95,7 @@ var rootCmd = &cobra.Command{
 							if selected.Command != "" {
 								runAction(scanner, selected)
 							} else {
-								fmt.Println("Ação não executável.")
+								printActionGuidance(selected)
 							}
 						} else {
 							fmt.Println("Opção inválida.")
@@ -139,6 +139,15 @@ func runAction(scanner *bufio.Scanner, action analyzer.Action) {
 	if execResult.ExitCode != 0 {
 		fmt.Println(errorColor("❌ Erro:"), execResult.Error)
 	}
+}
+
+func printActionGuidance(action analyzer.Action) {
+	if action.Description != "" {
+		fmt.Println(infoColor("Orientação:"), action.Description)
+		return
+	}
+
+	fmt.Println("Essa ação é apenas uma orientação por enquanto.")
 }
 
 func hasPlaceholder(command string) bool {

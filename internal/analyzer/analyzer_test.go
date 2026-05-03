@@ -1,6 +1,9 @@
 package analyzer
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestAnalyzeKnownErrors(t *testing.T) {
 	tests := []struct {
@@ -82,6 +85,29 @@ func TestAnalyzeKnownErrors(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAnalyzeCommandDetectsNVM(t *testing.T) {
+	got := AnalyzeCommand("nvm use 24", "sh: nvm: command not found")
+	if got == nil {
+		t.Fatal("AnalyzeCommand returned nil")
+	}
+
+	if got.Title != "NVM não carregado" {
+		t.Fatalf("Title = %q, want %q", got.Title, "NVM não carregado")
+	}
+
+	if len(got.Actions) != 2 {
+		t.Fatalf("len(Actions) = %d, want 2", len(got.Actions))
+	}
+
+	if !strings.Contains(got.Actions[0].Command, "nvm use 24") {
+		t.Fatalf("Actions[0].Command = %q, want command with nvm use 24", got.Actions[0].Command)
+	}
+
+	if got.Actions[1].Description == "" {
+		t.Fatal("Actions[1].Description should explain the manual setup")
 	}
 }
 

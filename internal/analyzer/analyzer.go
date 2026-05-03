@@ -13,6 +13,7 @@ const (
 type Action struct {
 	Label                string
 	Command              string
+	Description          string
 	Risk                 RiskLevel
 	RequiresConfirmation bool
 }
@@ -24,6 +25,11 @@ type Suggestion struct {
 }
 
 func Analyze(errorOutput string) *Suggestion {
+	return AnalyzeCommand("", errorOutput)
+}
+
+func AnalyzeCommand(command string, errorOutput string) *Suggestion {
+	input := strings.ToLower(strings.TrimSpace(command))
 	err := strings.ToLower(errorOutput)
 
 	// ENOSPC → disco cheio
@@ -44,6 +50,33 @@ func Analyze(errorOutput string) *Suggestion {
 					Command:              "npm cache clean --force",
 					Risk:                 RiskMedium,
 					RequiresConfirmation: true,
+				},
+			},
+		}
+	}
+
+	// nvm normalmente é carregado pelo shell interativo, não pelo sh usado na execução.
+	if strings.Contains(err, "nvm: command not found") {
+		nvmCommand := `export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && nvm use <versao>`
+		if version := nvmVersion(input); version != "" {
+			nvmCommand = `export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" && nvm use ` + version
+		}
+
+		return &Suggestion{
+			Title:       "NVM não carregado",
+			Description: "O nvm costuma existir como função do shell interativo e pode não estar disponível no executor atual",
+			Actions: []Action{
+				{
+					Label:       "Carregar nvm e usar a versão solicitada",
+					Command:     nvmCommand,
+					Description: "Executa o nvm carregando ~/.nvm/nvm.sh no mesmo comando",
+					Risk:        RiskLow,
+				},
+				{
+					Label:       "Adicionar carregamento do nvm ao shell",
+					Command:     "",
+					Description: `Adicione o carregamento do nvm ao seu ~/.zshrc ou ~/.bashrc e reinicie o terminal`,
+					Risk:        RiskLow,
 				},
 			},
 		}
@@ -125,4 +158,13 @@ func Analyze(errorOutput string) *Suggestion {
 	}
 
 	return nil
+}
+
+func nvmVersion(command string) string {
+	fields := strings.Fields(command)
+	if len(fields) >= 3 && fields[0] == "nvm" && fields[1] == "use" {
+		return fields[2]
+	}
+
+	return ""
 }
