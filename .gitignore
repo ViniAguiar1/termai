@@ -1,0 +1,15 @@
+# Go
+bin/
+dist/
+*.test
+coverage.out
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+
+# Env
+.env
