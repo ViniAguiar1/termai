@@ -1,8 +1,7 @@
 package cmd
 
 import (
-	"bufio"
-	"strings"
+	"errors"
 	"testing"
 
 	"github.com/ViniAguiar1/termai/internal/analyzer"
@@ -37,11 +36,36 @@ func TestConfirmAction(t *testing.T) {
 		RequiresConfirmation: true,
 	}
 
-	if !confirmAction(bufio.NewScanner(strings.NewReader("sim\n")), action) {
+	if !confirmAction(&stubLineReader{lines: []string{"sim"}}, action) {
 		t.Fatal("confirmAction should accept sim")
 	}
 
-	if confirmAction(bufio.NewScanner(strings.NewReader("\n")), action) {
+	if confirmAction(&stubLineReader{lines: []string{""}}, action) {
 		t.Fatal("confirmAction should reject empty answer")
 	}
+}
+
+type stubLineReader struct {
+	lines []string
+	err   error
+	index int
+}
+
+func (s *stubLineReader) ReadLine(_ string) (string, error) {
+	if s.err != nil {
+		return "", s.err
+	}
+
+	if s.index >= len(s.lines) {
+		return "", errors.New("no more input")
+	}
+
+	line := s.lines[s.index]
+	s.index++
+
+	return line, nil
+}
+
+func (s *stubLineReader) Close() error {
+	return nil
 }

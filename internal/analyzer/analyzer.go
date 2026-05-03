@@ -16,6 +16,7 @@ type Action struct {
 	Description          string
 	Risk                 RiskLevel
 	RequiresConfirmation bool
+	UpdatesSessionEnv    bool
 }
 
 type Suggestion struct {
@@ -67,10 +68,11 @@ func AnalyzeCommand(command string, errorOutput string) *Suggestion {
 			Description: "O nvm costuma existir como função do shell interativo e pode não estar disponível no executor atual",
 			Actions: []Action{
 				{
-					Label:       "Carregar nvm e usar a versão solicitada",
-					Command:     nvmCommand,
-					Description: "Executa o nvm carregando ~/.nvm/nvm.sh no mesmo comando",
-					Risk:        RiskLow,
+					Label:             "Carregar nvm e usar a versão solicitada",
+					Command:           nvmCommand,
+					Description:       "Executa o nvm carregando ~/.nvm/nvm.sh no mesmo comando",
+					Risk:              RiskLow,
+					UpdatesSessionEnv: true,
 				},
 				{
 					Label:       "Adicionar carregamento do nvm ao shell",

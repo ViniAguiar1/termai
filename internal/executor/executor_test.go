@@ -33,3 +33,15 @@ func TestRunCapturesStderrAndExitCode(t *testing.T) {
 		t.Fatalf("ExitCode = %d, want 7", got.ExitCode)
 	}
 }
+
+func TestRunAndUpdateSessionPersistsEnvironment(t *testing.T) {
+	got := RunAndUpdateSession("export TERMAI_TEST_VAR=hello")
+	if got.ExitCode != 0 {
+		t.Fatalf("ExitCode = %d, want 0", got.ExitCode)
+	}
+
+	next := Run("printf %s \"$TERMAI_TEST_VAR\"")
+	if next.Output != "hello" {
+		t.Fatalf("Output = %q, want %q", next.Output, "hello")
+	}
+}
