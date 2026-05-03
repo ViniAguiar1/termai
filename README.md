@@ -71,6 +71,10 @@ nvm use 24
 
 termAI should detect that `nvm` is not loaded in the current executor and suggest loading `~/.nvm/nvm.sh` before running `nvm use 24`.
 
+## 📄 License
+
+This project is licensed under the MIT License. See [LICENSE](/Users/viniciusaguiar/termai/LICENSE:1).
+
 ## 📌 Next Steps
 
 - Replace raw stdin scanning with a readline-style input layer for history and arrow-key support
