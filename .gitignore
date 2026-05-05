@@ -3,6 +3,7 @@ bin/
 dist/
 *.test
 coverage.out
+termai
 
 # macOS
 .DS_Store
