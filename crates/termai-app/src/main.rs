@@ -1,3 +1,5 @@
+mod colors;
+
 use std::io::Read;
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -6,15 +8,16 @@ use std::thread;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
 use termai_core::Terminal;
 use termai_pty::PtySession;
 use termai_renderer::{RenderCell, Renderer};
 
-const BG_COLOR: [f32; 4] = [0.12, 0.12, 0.14, 1.0];
-const FG_COLOR: [f32; 4] = [0.9, 0.9, 0.9, 1.0];
+const MIN_FONT_SIZE: f32 = 10.0;
+const MAX_FONT_SIZE: f32 = 60.0;
+const ZOOM_STEP: f32 = 2.0;
 
 struct App {
     window: Option<Arc<Window>>,
@@ -22,6 +25,9 @@ struct App {
     terminal: Terminal,
     pty: Option<PtySession>,
     pty_rx: Option<mpsc::Receiver<Vec<u8>>>,
+    modifiers: ModifiersState,
+    font_size: f32,
+    scale_factor: f32,
 }
 
 impl App {
@@ -32,6 +38,9 @@ impl App {
             terminal: Terminal::new(80, 24),
             pty: None,
             pty_rx: None,
+            modifiers: ModifiersState::empty(),
+            font_size: 14.0,
+            scale_factor: 1.0,
         }
     }
 
@@ -43,12 +52,26 @@ impl App {
                 row.iter()
                     .map(|cell| RenderCell {
                         ch: cell.c,
-                        fg: FG_COLOR,
-                        bg: BG_COLOR,
+                        fg: colors::resolve_fg(cell.fg, cell.bold),
+                        bg: colors::resolve_bg(cell.bg),
                     })
                     .collect()
             })
             .collect()
+    }
+
+    fn rebuild_renderer(&mut self) {
+        let window = match self.window {
+            Some(ref w) => w.clone(),
+            None => return,
+        };
+
+        let renderer = Renderer::new(window, self.scale_factor, self.font_size);
+        let (cols, rows) = renderer.grid_size();
+        self.terminal = Terminal::new(cols as usize, rows as usize);
+        self.renderer = Some(renderer);
+
+        // TODO: resize PTY to match new grid
     }
 }
 
@@ -68,8 +91,8 @@ impl ApplicationHandler for App {
                 .expect("Failed to create window"),
         );
 
-        let scale_factor = window.scale_factor() as f32;
-        let renderer = Renderer::new(window.clone(), scale_factor);
+        self.scale_factor = window.scale_factor() as f32;
+        let renderer = Renderer::new(window.clone(), self.scale_factor, self.font_size);
 
         let (cols, rows) = renderer.grid_size();
         self.terminal = Terminal::new(cols as usize, rows as usize);
@@ -114,19 +137,43 @@ impl ApplicationHandler for App {
                 }
             }
 
-            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                if let Some(ref mut renderer) = self.renderer {
-                    renderer.set_scale_factor(scale_factor as f32);
-                }
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = modifiers.state();
             }
 
             WindowEvent::KeyboardInput { event, .. } => {
-                if event.state == ElementState::Pressed {
-                    if let Some(ref mut pty) = self.pty {
-                        let bytes = key_to_bytes(&event.logical_key, &event.text);
-                        if !bytes.is_empty() {
-                            let _ = pty.write(&bytes);
+                if event.state != ElementState::Pressed {
+                    return;
+                }
+
+                let is_super = self.modifiers.super_key();
+
+                // Zoom: Cmd+ / Cmd-
+                if is_super {
+                    match &event.logical_key {
+                        Key::Character(c) if c.as_str() == "=" || c.as_str() == "+" => {
+                            self.font_size = (self.font_size + ZOOM_STEP).min(MAX_FONT_SIZE);
+                            self.rebuild_renderer();
+                            return;
                         }
+                        Key::Character(c) if c.as_str() == "-" => {
+                            self.font_size = (self.font_size - ZOOM_STEP).max(MIN_FONT_SIZE);
+                            self.rebuild_renderer();
+                            return;
+                        }
+                        Key::Character(c) if c.as_str() == "0" => {
+                            self.font_size = 14.0;
+                            self.rebuild_renderer();
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+
+                if let Some(ref mut pty) = self.pty {
+                    let bytes = key_to_bytes(&event.logical_key, &event.text);
+                    if !bytes.is_empty() {
+                        let _ = pty.write(&bytes);
                     }
                 }
             }
