@@ -3,6 +3,11 @@ bin/
 dist/
 *.test
 coverage.out
+
+# Rust
+target/
+
+# Binary
 termai
 
 # macOS
