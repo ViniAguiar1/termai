@@ -4,7 +4,7 @@ GPU-accelerated terminal emulator with built-in AI assistance.
 
 ## Status
 
-Early development. The terminal emulator is functional on macOS with GPU rendering, split panes, tabs, and ANSI color support. AI integration is next.
+Active development. The terminal emulator is functional on macOS with GPU rendering, split panes, tabs, scrollback search, and AI-powered error analysis (Claude / OpenAI).
 
 ## Goal
 
@@ -12,14 +12,15 @@ Build a fast, cross-platform terminal emulator that can:
 
 - Render text on the GPU for smooth, high-performance output
 - Split panes and tabs like tmux, but built-in
-- Analyze terminal output and detect errors
-- Suggest corrective actions powered by AI
+- Analyze terminal output and detect errors automatically
+- Suggest corrective actions powered by LLM (Claude or OpenAI)
+- Fall back to offline pattern matching when no API key is configured
 - Run on macOS, Linux, and Windows
 
 ## Tech Stack
 
 - **Rust** — Terminal emulator (wgpu, winit, vte, portable-pty)
-- **Go** — AI engine (Cobra CLI, error analysis, future LLM integration)
+- **Go** — AI engine (Cobra CLI, error analysis, Claude/OpenAI LLM integration)
 
 ## Features
 
@@ -34,26 +35,43 @@ Build a fast, cross-platform terminal emulator that can:
 - Zoom in/out with Cmd+/Cmd-
 - Alternate screen buffer (vim, htop, tmux)
 - VT100/xterm escape sequence support (cursor movement, scroll regions, insert/delete lines)
+- Search in scrollback (Cmd+F) with match highlighting and navigation
+- PTY resize notification (programs re-render correctly on split/resize)
+- AI-powered error analysis via IPC (Rust ↔ Go over Unix socket)
+- LLM support (Claude / OpenAI) with offline pattern matching fallback
 - Config file (`~/.config/termai/config.toml`)
 
 ## Quick Start
 
 ```bash
-cargo run --release
+./build.sh
+./target/release/termai
 ```
 
 ## Build
 
 ```bash
-# Debug
-cargo build
+# Build both Rust terminal + Go AI engine
+./build.sh
 
-# Release
+# Or build separately:
 cargo build --release
-
-# Run
-./target/release/termai
+cd ai && go build -o ../target/release/termai-ai .
 ```
+
+## AI Setup
+
+The AI engine works offline with pattern matching for common errors. For full LLM-powered analysis, set one of:
+
+```bash
+# Anthropic (recommended)
+export ANTHROPIC_API_KEY="sk-ant-..."
+
+# Or OpenAI
+export OPENAI_API_KEY="sk-..."
+```
+
+When a command fails, the AI overlay appears automatically with suggestions. Press 1-9 to execute an action, Escape to dismiss.
 
 ## Keyboard Shortcuts
 
@@ -70,6 +88,10 @@ cargo build --release
 | Cmd+C | Copy selection |
 | Cmd+V | Paste |
 | Shift+PageUp/Down | Scroll history |
+| Cmd+F | Search in scrollback |
+| Cmd+G | Next search match |
+| Cmd+Shift+G | Previous search match |
+| Escape | Close search / dismiss AI overlay |
 
 ## Config
 
@@ -115,9 +137,9 @@ termai/
 │   ├── termai-renderer/        # wgpu GPU rendering, glyph atlas
 │   └── termai-pty/             # Cross-platform PTY (Unix + Windows ConPTY)
 ├── ai/                         # Go AI engine
-│   ├── cmd/                    # CLI, session, prompt
-│   └── internal/               # Analyzer, executor
-└── proto/                      # IPC protocol (planned)
+│   ├── cmd/                    # CLI, session, prompt, IPC server
+│   └── internal/               # Analyzer, executor, LLM client
+└── build.sh                    # Build script (Rust + Go)
 ```
 
 ## License
@@ -126,7 +148,8 @@ MIT License. See [LICENSE](LICENSE).
 
 ## Next Steps
 
-- IPC between Rust emulator and Go AI engine
-- AI-powered error analysis with LLM integration
 - Cross-platform testing (Linux, Windows)
-- Multi-language support (i18n)
+- AI autocompletion (command suggestions based on context)
+- Themes support (Dracula, Catppuccin, etc.)
+- Ligatures and Nerd Font icons
+- Clickable URLs (Cmd+click to open)
