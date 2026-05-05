@@ -54,7 +54,8 @@ struct SearchState {
     current: usize,
 }
 
-/// Error patterns that the Go AI analyzer recognizes.
+/// Error patterns that trigger AI analysis.
+/// Includes both the Go analyzer's patterns and general error indicators.
 const ERROR_PATTERNS: &[&str] = &[
     "command not found",
     "no space left",
@@ -64,6 +65,23 @@ const ERROR_PATTERNS: &[&str] = &[
     "module not found",
     "cannot find module",
     "permission denied",
+    "no such file or directory",
+    "is not recognized",
+    "segmentation fault",
+    "killed",
+    "abort",
+    "panic:",
+    "error:",
+    "fatal:",
+    "traceback",
+    "exception",
+    "failed to",
+    "cannot find",
+    "not found",
+    "denied",
+    "refused",
+    "timeout",
+    "connection reset",
 ];
 
 struct App {

@@ -9,8 +9,12 @@ import (
 	"syscall"
 
 	"github.com/ViniAguiar1/termai/ai/internal/analyzer"
+	"github.com/ViniAguiar1/termai/ai/internal/llm"
 	"github.com/spf13/cobra"
 )
+
+// Global LLM client (nil if no API key)
+var llmClient *llm.Client
 
 const defaultSocketPath = "/tmp/termai-ai.sock"
 
@@ -59,6 +63,14 @@ func init() {
 }
 
 func runServer(socketPath string) error {
+	// Initialize LLM client
+	llmClient = llm.New()
+	if llmClient != nil {
+		fmt.Fprintln(os.Stderr, "LLM enabled (ANTHROPIC_API_KEY found)")
+	} else {
+		fmt.Fprintln(os.Stderr, "LLM disabled (set ANTHROPIC_API_KEY to enable)")
+	}
+
 	// Clean up stale socket
 	_ = os.Remove(socketPath)
 
@@ -112,8 +124,17 @@ func handleConnection(conn net.Conn) {
 		errorOutput := req.Output
 		suggestion := analyzer.AnalyzeCommand(req.Command, errorOutput)
 
+		// Fall back to LLM if pattern matching found nothing
+		if suggestion == nil && llmClient != nil {
+			llmSuggestion, err := llmClient.Analyze(req.Command, errorOutput)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "LLM error: %v\n", err)
+			} else {
+				suggestion = llmSuggestion
+			}
+		}
+
 		if suggestion == nil {
-			// No suggestion — send empty response
 			resp := AnalyzeResponse{Type: "no_suggestion"}
 			_ = encoder.Encode(resp)
 			continue
