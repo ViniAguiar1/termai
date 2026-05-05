@@ -433,6 +433,7 @@ fn key_to_bytes(key: &Key, text: &Option<winit::keyboard::SmolStr>) -> Vec<u8> {
             NamedKey::Backspace => vec![0x7f],
             NamedKey::Tab => vec![b'\t'],
             NamedKey::Escape => vec![0x1b],
+            NamedKey::Space => vec![b' '],
             NamedKey::ArrowUp => b"\x1b[A".to_vec(),
             NamedKey::ArrowDown => b"\x1b[B".to_vec(),
             NamedKey::ArrowRight => b"\x1b[C".to_vec(),
