@@ -10,9 +10,9 @@ BUILD_DIR="$ROOT_DIR/target/release"
 DIST_DIR="$ROOT_DIR/dist"
 APP_DIR="$DIST_DIR/$BUNDLE_NAME"
 
-# Code signing
-SIGN_IDENTITY="Developer ID Application: Vinicius Aguiar (G64C6228HP)"
-TEAM_ID="G64C6228HP"
+# Code signing (set these env vars before running)
+SIGN_IDENTITY="${APPLE_SIGN_IDENTITY:?Set APPLE_SIGN_IDENTITY (e.g. 'Developer ID Application: Name (TEAMID)')}"
+TEAM_ID="${APPLE_TEAM_ID:?Set APPLE_TEAM_ID}"
 
 echo "=== Building termAI for macOS ==="
 echo ""
