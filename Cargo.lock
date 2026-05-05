@@ -1867,6 +1867,7 @@ dependencies = [
  "termai-core",
  "termai-pty",
  "termai-renderer",
+ "wgpu",
  "winit",
 ]
 
@@ -1889,8 +1890,12 @@ dependencies = [
 name = "termai-renderer"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "bytemuck",
+ "log",
+ "pollster",
  "wgpu",
+ "winit",
 ]
 
 [[package]]
