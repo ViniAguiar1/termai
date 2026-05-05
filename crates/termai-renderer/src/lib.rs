@@ -7,7 +7,6 @@ use wgpu::util::DeviceExt;
 
 // Embedded monospace font (JetBrains Mono)
 const FONT_BYTES: &[u8] = include_bytes!("../assets/JetBrainsMono-Regular.ttf");
-const BASE_FONT_SIZE: f32 = 32.0;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -50,7 +49,7 @@ pub struct Renderer {
 
 impl Renderer {
     /// Create a new renderer attached to the given window.
-    pub fn new(window: Arc<winit::window::Window>, scale_factor: f32) -> Self {
+    pub fn new(window: Arc<winit::window::Window>, scale_factor: f32, font_size: f32) -> Self {
         let size = window.inner_size();
         let width = size.width.max(1);
         let height = size.height.max(1);
@@ -104,8 +103,8 @@ impl Renderer {
         surface.configure(&device, &surface_config);
 
         // Build glyph atlas scaled for HiDPI
-        let font_size = BASE_FONT_SIZE * scale_factor;
-        let atlas = GlyphAtlas::new(FONT_BYTES, font_size);
+        let pixel_font_size = font_size * scale_factor;
+        let atlas = GlyphAtlas::new(FONT_BYTES, pixel_font_size);
 
         // Upload atlas texture to GPU
         let atlas_texture = device.create_texture_with_data(
@@ -305,12 +304,6 @@ impl Renderer {
             .write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
     }
 
-    /// Update scale factor (e.g. when moving between displays).
-    pub fn set_scale_factor(&mut self, _scale_factor: f32) {
-        // Would need to rebuild atlas with new font size.
-        // For now, atlas is built at init with the initial scale factor.
-    }
-
     pub fn width(&self) -> u32 {
         self.width
     }
@@ -391,9 +384,9 @@ impl Renderer {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.12,
-                            g: 0.12,
-                            b: 0.14,
+                            r: 0.07,
+                            g: 0.07,
+                            b: 0.09,
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,
