@@ -10,21 +10,25 @@ BUILD_DIR="$ROOT_DIR/target/release"
 DIST_DIR="$ROOT_DIR/dist"
 APP_DIR="$DIST_DIR/$BUNDLE_NAME"
 
+# Code signing
+SIGN_IDENTITY="Developer ID Application: Vinicius Aguiar (G64C6228HP)"
+TEAM_ID="G64C6228HP"
+
 echo "=== Building termAI for macOS ==="
 echo ""
 
 # 1. Build Go AI engine
-echo "[1/4] Building Go AI engine..."
+echo "[1/6] Building Go AI engine..."
 cd "$ROOT_DIR/ai"
 CGO_ENABLED=0 go build -ldflags "-s -w" -o "$BUILD_DIR/termai-ai" .
 
 # 2. Build Rust terminal (release, Apple Silicon)
-echo "[2/4] Building Rust terminal..."
+echo "[2/6] Building Rust terminal..."
 cd "$ROOT_DIR"
 cargo build --release
 
 # 3. Create .app bundle
-echo "[3/4] Creating $BUNDLE_NAME..."
+echo "[3/6] Creating $BUNDLE_NAME..."
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources"
@@ -63,39 +67,56 @@ fi
 
 echo "  Created: $APP_DIR"
 
-# 4. Create DMG
-echo "[4/4] Creating $DMG_NAME..."
+# 4. Code sign
+echo "[4/6] Signing app..."
+codesign --force --options runtime --sign "$SIGN_IDENTITY" "$APP_DIR/Contents/MacOS/termai"
+codesign --force --options runtime --sign "$SIGN_IDENTITY" "$APP_DIR/Contents/MacOS/termai-ai"
+codesign --force --options runtime --sign "$SIGN_IDENTITY" "$APP_DIR/Contents/MacOS/termai-launcher"
+codesign --force --options runtime --sign "$SIGN_IDENTITY" "$APP_DIR"
+echo "  Signed with: $SIGN_IDENTITY"
+
+# Verify signature
+codesign --verify --deep --strict "$APP_DIR"
+echo "  Signature verified OK"
+
+# 5. Create DMG
+echo "[5/6] Creating $DMG_NAME..."
 mkdir -p "$DIST_DIR"
 rm -f "$DIST_DIR/$DMG_NAME"
 
-# Create temporary DMG directory
 DMG_TMP="$DIST_DIR/dmg-tmp"
 rm -rf "$DMG_TMP"
 mkdir -p "$DMG_TMP"
 cp -R "$APP_DIR" "$DMG_TMP/"
-
-# Create symlink to Applications
 ln -s /Applications "$DMG_TMP/Applications"
 
-# Create DMG
 hdiutil create -volname "$APP_NAME" \
     -srcfolder "$DMG_TMP" \
     -ov -format UDZO \
     "$DIST_DIR/$DMG_NAME"
 
-# Cleanup
 rm -rf "$DMG_TMP"
+
+# Sign the DMG too
+codesign --force --sign "$SIGN_IDENTITY" "$DIST_DIR/$DMG_NAME"
+
+# 6. Notarize
+echo "[6/6] Notarizing (this may take a few minutes)..."
+xcrun notarytool submit "$DIST_DIR/$DMG_NAME" \
+    --team-id "$TEAM_ID" \
+    --keychain-profile "notarytool" \
+    --wait
+
+# Staple the notarization ticket
+xcrun stapler staple "$DIST_DIR/$DMG_NAME"
+echo "  Notarization complete"
 
 echo ""
 echo "=== Done! ==="
 echo ""
 echo "  App:  $APP_DIR"
 echo "  DMG:  $DIST_DIR/$DMG_NAME"
-echo ""
-echo "To install:"
-echo "  1. Open the .dmg"
-echo "  2. Drag termAI to Applications"
-echo "  3. Right-click > Open (first time, to bypass Gatekeeper)"
+echo "  Status: Signed + Notarized (opens without warnings)"
 echo ""
 echo "For AI features, set your API key:"
 echo "  export ANTHROPIC_API_KEY=\"sk-ant-...\""
