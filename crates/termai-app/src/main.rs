@@ -1,10 +1,12 @@
 mod colors;
+mod config;
+mod pane;
+mod tab;
 
-use std::io::Read;
-use std::sync::mpsc;
 use std::sync::Arc;
-use std::thread;
 use std::time::Instant;
+
+use config::Config;
 
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
@@ -12,17 +14,18 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
-use termai_core::{CursorStyle, Terminal};
-use termai_pty::PtySession;
-use termai_renderer::{RenderCell, Renderer};
+use termai_core::CursorStyle;
+use termai_renderer::{RenderCell, Renderer, Vertex};
+
+use pane::{PaneRect, SplitDir};
+use tab::TabBar;
 
 const MIN_FONT_SIZE: f32 = 10.0;
 const MAX_FONT_SIZE: f32 = 60.0;
 const ZOOM_STEP: f32 = 2.0;
 const CURSOR_BLINK_MS: u128 = 530;
+const TAB_BAR_HEIGHT: f32 = 0.0; // Will be set based on cell height
 
-/// Selection state for mouse text selection.
-#[derive(Clone)]
 struct Selection {
     start_col: usize,
     start_row: usize,
@@ -43,11 +46,10 @@ impl Selection {
 }
 
 struct App {
+    config: Config,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
-    terminal: Terminal,
-    pty: Option<PtySession>,
-    pty_rx: Option<mpsc::Receiver<Vec<u8>>>,
+    tab_bar: TabBar,
     modifiers: ModifiersState,
     font_size: f32,
     scale_factor: f32,
@@ -60,11 +62,10 @@ struct App {
 impl App {
     fn new() -> Self {
         Self {
+            config: Config::default(),
             window: None,
             renderer: None,
-            terminal: Terminal::new(80, 24),
-            pty: None,
-            pty_rx: None,
+            tab_bar: TabBar::new(80, 24),
             modifiers: ModifiersState::empty(),
             font_size: 14.0,
             scale_factor: 1.0,
@@ -75,27 +76,69 @@ impl App {
         }
     }
 
-    fn pixel_to_cell(&self, x: f64, y: f64) -> (usize, usize) {
+    fn tab_bar_pixel_height(&self) -> f32 {
+        if self.tab_bar.tab_count() <= 1 {
+            return 0.0;
+        }
+        if let Some(ref renderer) = self.renderer {
+            let (_, ch) = renderer.cell_size();
+            ch + 4.0 // one row + padding
+        } else {
+            0.0
+        }
+    }
+
+    fn content_area(&self) -> (f32, f32, f32, f32) {
+        if let Some(ref renderer) = self.renderer {
+            let w = renderer.width() as f32;
+            let h = renderer.height() as f32;
+            let tab_h = self.tab_bar_pixel_height();
+            (0.0, tab_h, w, h - tab_h)
+        } else {
+            (0.0, 0.0, 0.0, 0.0)
+        }
+    }
+
+    fn pixel_to_cell_in_pane(&self, px: f64, py: f64, rect: &PaneRect) -> (usize, usize) {
         if let Some(ref renderer) = self.renderer {
             let (cw, ch) = renderer.cell_size();
-            let col = (x as f32 * self.scale_factor / cw).floor() as usize;
-            let row = (y as f32 * self.scale_factor / ch).floor() as usize;
-            (
-                col.min(self.terminal.cols.saturating_sub(1)),
-                row.min(self.terminal.rows.saturating_sub(1)),
-            )
+            let x = px as f32 * self.scale_factor - rect.x;
+            let y = py as f32 * self.scale_factor - rect.y;
+            let col = (x / cw).floor().max(0.0) as usize;
+            let row = (y / ch).floor().max(0.0) as usize;
+            (col, row)
         } else {
             (0, 0)
         }
     }
 
-    fn build_render_cells(&self) -> Vec<Vec<RenderCell>> {
-        let visible = self.terminal.visible_grid();
-        let cursor_on = self.terminal.cursor_visible
-            && self.terminal.scroll_offset == 0
+    fn find_pane_at(&self, px: f64, py: f64) -> Option<PaneRect> {
+        let (cx, cy, cw, ch) = self.content_area();
+        let rects = self.tab_bar.tabs[self.tab_bar.active]
+            .layout(cx, cy, cw, ch);
+        let sx = px as f32 * self.scale_factor;
+        let sy = py as f32 * self.scale_factor;
+        rects.into_iter().find(|r| {
+            sx >= r.x && sx < r.x + r.w && sy >= r.y && sy < r.y + r.h
+        })
+    }
+
+    fn build_pane_cells(
+        &self,
+        pane: &pane::Pane,
+        is_focused: bool,
+    ) -> Vec<Vec<RenderCell>> {
+        let visible = pane.terminal.visible_grid();
+        let cursor_on = is_focused
+            && pane.terminal.cursor_visible
+            && pane.terminal.scroll_offset == 0
             && (self.cursor_blink_start.elapsed().as_millis() / CURSOR_BLINK_MS) % 2 == 0;
 
-        let sel = self.selection.as_ref().map(|s| s.normalized());
+        let sel = if is_focused {
+            self.selection.as_ref().map(|s| s.normalized())
+        } else {
+            None
+        };
 
         visible
             .iter()
@@ -107,14 +150,12 @@ impl App {
                         let mut fg = colors::resolve_fg(cell.fg, cell.bold);
                         let mut bg = colors::resolve_bg(cell.bg);
 
-                        // Inverse video
                         if cell.inverse {
                             std::mem::swap(&mut fg, &mut bg);
                         }
 
-                        // Selection highlight
                         if let Some((sc, sr, ec, er)) = sel {
-                            let in_selection = if sr == er {
+                            let in_sel = if sr == er {
                                 row_idx == sr && col_idx >= sc && col_idx < ec
                             } else if row_idx == sr {
                                 col_idx >= sc
@@ -123,28 +164,21 @@ impl App {
                             } else {
                                 row_idx > sr && row_idx < er
                             };
-                            if in_selection {
-                                // Invert colors for selection
+                            if in_sel {
                                 std::mem::swap(&mut fg, &mut bg);
                             }
                         }
 
-                        // Cursor
                         if cursor_on
-                            && row_idx == self.terminal.cursor_y
-                            && col_idx == self.terminal.cursor_x
+                            && row_idx == pane.terminal.cursor_y
+                            && col_idx == pane.terminal.cursor_x
                         {
-                            match self.terminal.cursor_style {
+                            match pane.terminal.cursor_style {
                                 CursorStyle::Block => {
                                     fg = colors::BG;
                                     bg = colors::FG;
                                 }
-                                CursorStyle::Underline => {
-                                    // Rendered as a special underline — just highlight for now
-                                    bg = [0.3, 0.3, 0.35, 1.0];
-                                }
-                                CursorStyle::Bar => {
-                                    // Thin bar is hard with quad rendering — use highlight
+                                CursorStyle::Underline | CursorStyle::Bar => {
                                     bg = [0.3, 0.3, 0.35, 1.0];
                                 }
                             }
@@ -157,50 +191,116 @@ impl App {
             .collect()
     }
 
+    fn build_tab_bar_cells(&self) -> Vec<Vec<RenderCell>> {
+        if self.tab_bar.tab_count() <= 1 {
+            return vec![];
+        }
+
+        let renderer = match self.renderer {
+            Some(ref r) => r,
+            None => return vec![],
+        };
+
+        let (cols, _) = renderer.grid_size();
+        let mut row = vec![
+            RenderCell {
+                ch: ' ',
+                fg: [0.5, 0.5, 0.5, 1.0],
+                bg: [0.15, 0.15, 0.17, 1.0],
+            };
+            cols as usize
+        ];
+
+        let mut col = 0usize;
+        for (i, tab) in self.tab_bar.tabs.iter().enumerate() {
+            let label = format!(" {} {} ", i + 1, tab.title);
+            let is_active = i == self.tab_bar.active;
+
+            for ch in label.chars() {
+                if col >= cols as usize {
+                    break;
+                }
+                row[col] = RenderCell {
+                    ch,
+                    fg: if is_active {
+                        [1.0, 1.0, 1.0, 1.0]
+                    } else {
+                        [0.5, 0.5, 0.5, 1.0]
+                    },
+                    bg: if is_active {
+                        [0.25, 0.25, 0.28, 1.0]
+                    } else {
+                        [0.15, 0.15, 0.17, 1.0]
+                    },
+                };
+                col += 1;
+            }
+
+            // Separator
+            if col < cols as usize {
+                row[col] = RenderCell {
+                    ch: '|',
+                    fg: [0.3, 0.3, 0.3, 1.0],
+                    bg: [0.15, 0.15, 0.17, 1.0],
+                };
+                col += 1;
+            }
+        }
+
+        vec![row]
+    }
+
     fn zoom(&mut self) {
         if let Some(ref mut renderer) = self.renderer {
             renderer.rebuild_atlas(self.font_size, self.scale_factor);
-            let (cols, rows) = renderer.grid_size();
-            let mut new_grid =
-                vec![vec![termai_core::Cell::default(); cols as usize]; rows as usize];
-            for (y, row) in self.terminal.grid.iter().enumerate() {
-                if y >= rows as usize {
-                    break;
-                }
-                for (x, cell) in row.iter().enumerate() {
-                    if x >= cols as usize {
-                        break;
-                    }
-                    new_grid[y][x] = cell.clone();
-                }
-            }
-            self.terminal.cols = cols as usize;
-            self.terminal.rows = rows as usize;
-            self.terminal.grid = new_grid;
-            self.terminal.cursor_x = self.terminal.cursor_x.min(cols as usize - 1);
-            self.terminal.cursor_y = self.terminal.cursor_y.min(rows as usize - 1);
         }
+        // Panes will be re-created with correct sizes on next layout
     }
 
     fn copy_selection(&mut self) {
+        let tab = &self.tab_bar.tabs[self.tab_bar.active];
         if let Some(ref sel) = self.selection {
             let (sc, sr, ec, er) = sel.normalized();
-            let text = self.terminal.get_text(sc, sr, ec, er);
-            if !text.is_empty() {
-                if let Some(ref mut clip) = self.clipboard {
-                    let _ = clip.set_text(&text);
+            // Find focused pane and extract text
+            if let Some(pane) = self.find_focused_pane_ref() {
+                let text = pane.terminal.get_text(sc, sr, ec, er);
+                if !text.is_empty() {
+                    if let Some(ref mut clip) = self.clipboard {
+                        let _ = clip.set_text(&text);
+                    }
                 }
             }
         }
+    }
+
+    fn find_focused_pane_ref(&self) -> Option<&pane::Pane> {
+        let tab = &self.tab_bar.tabs[self.tab_bar.active];
+        find_pane_ref(&tab.root, tab.focused_pane_id)
     }
 
     fn paste(&mut self) {
         if let Some(ref mut clip) = self.clipboard {
             if let Ok(text) = clip.get_text() {
-                if let Some(ref mut pty) = self.pty {
-                    let _ = pty.write(text.as_bytes());
+                let tab = self.tab_bar.active_tab();
+                if let Some(pane) = tab.root.find_pane(tab.focused_pane_id) {
+                    pane.write(text.as_bytes());
                 }
             }
+        }
+    }
+}
+
+fn find_pane_ref(node: &pane::PaneNode, id: u64) -> Option<&pane::Pane> {
+    match node {
+        pane::PaneNode::Leaf(pane) => {
+            if pane.id == id {
+                Some(pane)
+            } else {
+                None
+            }
+        }
+        pane::PaneNode::Split { first, second, .. } => {
+            find_pane_ref(first, id).or_else(|| find_pane_ref(second, id))
         }
     }
 }
@@ -212,8 +312,11 @@ impl ApplicationHandler for App {
         }
 
         let attrs = Window::default_attributes()
-            .with_title("termAI")
-            .with_inner_size(winit::dpi::LogicalSize::new(1024, 640));
+            .with_title(&self.config.window.title)
+            .with_inner_size(winit::dpi::LogicalSize::new(
+                self.config.window.width,
+                self.config.window.height,
+            ));
 
         let window = Arc::new(
             event_loop
@@ -225,30 +328,7 @@ impl ApplicationHandler for App {
         let renderer = Renderer::new(window.clone(), self.scale_factor, self.font_size);
 
         let (cols, rows) = renderer.grid_size();
-        self.terminal = Terminal::new(cols as usize, rows as usize);
-
-        let mut pty =
-            PtySession::spawn(cols as u16, rows as u16).expect("Failed to spawn PTY");
-
-        let (tx, rx) = mpsc::channel::<Vec<u8>>();
-        let mut pty_reader = pty.take_reader();
-        thread::spawn(move || {
-            let mut buf = [0u8; 4096];
-            loop {
-                match pty_reader.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        if tx.send(buf[..n].to_vec()).is_err() {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-
-        self.pty_rx = Some(rx);
-        self.pty = Some(pty);
+        self.tab_bar = TabBar::new(cols as usize, rows as usize);
         self.renderer = Some(renderer);
         self.window = Some(window);
     }
@@ -262,8 +342,7 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(size) => {
                 if let Some(ref mut renderer) = self.renderer {
                     renderer.resize(size.width, size.height);
-                    let (cols, rows) = renderer.grid_size();
-                    self.terminal = Terminal::new(cols as usize, rows as usize);
+                    // Pane terminals will be resized on next render via layout
                 }
             }
 
@@ -272,22 +351,27 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::MouseWheel { delta, .. } => {
-                let lines = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => (y.abs() as usize).max(1) * if y < 0.0 { 1 } else { 0 },
-                    MouseScrollDelta::PixelDelta(pos) => {
-                        let l = (pos.y.abs() / 20.0) as usize;
-                        if pos.y < 0.0 { l.max(1) } else { 0 }
+                let tab = self.tab_bar.active_tab();
+                let focused_id = tab.focused_pane_id;
+                if let Some(pane) = tab.root.find_pane(focused_id) {
+                    match delta {
+                        MouseScrollDelta::LineDelta(_, y) => {
+                            let n = (y.abs() as usize).max(1);
+                            if y > 0.0 {
+                                pane.terminal.scroll_viewport_up(n);
+                            } else {
+                                pane.terminal.scroll_viewport_down(n);
+                            }
+                        }
+                        MouseScrollDelta::PixelDelta(pos) => {
+                            let n = ((pos.y.abs() / 20.0) as usize).max(1);
+                            if pos.y > 0.0 {
+                                pane.terminal.scroll_viewport_up(n);
+                            } else {
+                                pane.terminal.scroll_viewport_down(n);
+                            }
+                        }
                     }
-                };
-                let lines_up = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => if y > 0.0 { (y as usize).max(1) } else { 0 },
-                    MouseScrollDelta::PixelDelta(pos) => if pos.y > 0.0 { ((pos.y / 20.0) as usize).max(1) } else { 0 },
-                };
-                if lines_up > 0 {
-                    self.terminal.scroll_viewport_up(lines_up);
-                }
-                if lines > 0 {
-                    self.terminal.scroll_viewport_down(lines);
                 }
             }
 
@@ -306,18 +390,22 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::CursorMoved { position, .. } => {
+                // Click to focus pane
                 if self.mouse_pressed {
-                    let (col, row) = self.pixel_to_cell(position.x, position.y);
-                    if let Some(ref mut sel) = self.selection {
-                        sel.end_col = col;
-                        sel.end_row = row;
-                    } else {
-                        self.selection = Some(Selection {
-                            start_col: col,
-                            start_row: row,
-                            end_col: col,
-                            end_row: row,
-                        });
+                    if let Some(rect) = self.find_pane_at(position.x, position.y) {
+                        self.tab_bar.active_tab().focused_pane_id = rect.id;
+                        let (col, row) = self.pixel_to_cell_in_pane(position.x, position.y, &rect);
+                        if let Some(ref mut sel) = self.selection {
+                            sel.end_col = col;
+                            sel.end_row = row;
+                        } else {
+                            self.selection = Some(Selection {
+                                start_col: col,
+                                start_row: row,
+                                end_col: col,
+                                end_row: row,
+                            });
+                        }
                     }
                 }
             }
@@ -327,10 +415,10 @@ impl ApplicationHandler for App {
                     return;
                 }
 
-                // Reset cursor blink on keypress
                 self.cursor_blink_start = Instant::now();
 
                 let is_super = self.modifiers.super_key();
+                let is_shift = self.modifiers.shift_key();
 
                 if is_super {
                     match &event.logical_key {
@@ -350,14 +438,78 @@ impl ApplicationHandler for App {
                             self.zoom();
                             return;
                         }
-                        // Copy
+                        // Split vertical: Cmd+D
+                        Key::Character(c) if c.as_str() == "d" && !is_shift => {
+                            let (cx, cy, cw, ch) = self.content_area();
+                            if let Some(ref renderer) = self.renderer {
+                                let (cols, rows) = renderer.grid_size_for(cw / 2.0, ch);
+                                self.tab_bar.active_tab().split(
+                                    SplitDir::Vertical,
+                                    cols as usize,
+                                    rows as usize,
+                                );
+                            }
+                            return;
+                        }
+                        // Split horizontal: Cmd+Shift+D
+                        Key::Character(c) if (c.as_str() == "d" || c.as_str() == "D") && is_shift => {
+                            let (cx, cy, cw, ch) = self.content_area();
+                            if let Some(ref renderer) = self.renderer {
+                                let (cols, rows) = renderer.grid_size_for(cw, ch / 2.0);
+                                self.tab_bar.active_tab().split(
+                                    SplitDir::Horizontal,
+                                    cols as usize,
+                                    rows as usize,
+                                );
+                            }
+                            return;
+                        }
+                        // New tab: Cmd+T
+                        Key::Character(c) if c.as_str() == "t" => {
+                            if let Some(ref renderer) = self.renderer {
+                                let (cols, rows) = renderer.grid_size();
+                                self.tab_bar.new_tab(cols as usize, rows as usize);
+                            }
+                            return;
+                        }
+                        // Close pane/tab: Cmd+W
+                        Key::Character(c) if c.as_str() == "w" => {
+                            let tab = self.tab_bar.active_tab();
+                            if !tab.close_focused() {
+                                // Last pane in tab — close tab
+                                if !self.tab_bar.close_active_tab() {
+                                    // Last tab — exit
+                                    event_loop.exit();
+                                }
+                            }
+                            return;
+                        }
+                        // Focus next pane: Cmd+]
+                        Key::Character(c) if c.as_str() == "]" => {
+                            self.tab_bar.active_tab().focus_next();
+                            return;
+                        }
+                        // Focus prev pane: Cmd+[
+                        Key::Character(c) if c.as_str() == "[" => {
+                            self.tab_bar.active_tab().focus_prev();
+                            return;
+                        }
+                        // Copy: Cmd+C
                         Key::Character(c) if c.as_str() == "c" => {
                             self.copy_selection();
                             return;
                         }
-                        // Paste
+                        // Paste: Cmd+V
                         Key::Character(c) if c.as_str() == "v" => {
                             self.paste();
+                            return;
+                        }
+                        // Tab switching: Cmd+1-9
+                        Key::Character(c)
+                            if c.len() == 1 && c.as_bytes()[0] >= b'1' && c.as_bytes()[0] <= b'9' =>
+                        {
+                            let idx = (c.as_bytes()[0] - b'1') as usize;
+                            self.tab_bar.switch_to(idx);
                             return;
                         }
                         _ => {}
@@ -365,54 +517,112 @@ impl ApplicationHandler for App {
                 }
 
                 // Shift+PageUp/Down for scrollback
-                let is_shift = self.modifiers.shift_key();
                 if is_shift {
                     match &event.logical_key {
                         Key::Named(NamedKey::PageUp) => {
-                            self.terminal.scroll_viewport_up(self.terminal.rows / 2);
+                            let tab = self.tab_bar.active_tab();
+                            let id = tab.focused_pane_id;
+                            if let Some(pane) = tab.root.find_pane(id) {
+                                let half = pane.terminal.rows / 2;
+                                pane.terminal.scroll_viewport_up(half.max(1));
+                            }
                             return;
                         }
                         Key::Named(NamedKey::PageDown) => {
-                            self.terminal.scroll_viewport_down(self.terminal.rows / 2);
+                            let tab = self.tab_bar.active_tab();
+                            let id = tab.focused_pane_id;
+                            if let Some(pane) = tab.root.find_pane(id) {
+                                let half = pane.terminal.rows / 2;
+                                pane.terminal.scroll_viewport_down(half.max(1));
+                            }
                             return;
                         }
                         _ => {}
                     }
                 }
 
-                // Clear selection on any key
                 self.selection = None;
 
-                if let Some(ref mut pty) = self.pty {
+                // Send key to focused pane
+                let tab = self.tab_bar.active_tab();
+                let id = tab.focused_pane_id;
+                if let Some(pane) = tab.root.find_pane(id) {
                     let bytes = key_to_bytes(&event.logical_key, &event.text);
                     if !bytes.is_empty() {
-                        let _ = pty.write(&bytes);
+                        pane.write(&bytes);
                     }
                 }
             }
 
             WindowEvent::RedrawRequested => {
-                // Drain PTY output
-                if let Some(ref rx) = self.pty_rx {
-                    while let Ok(data) = rx.try_recv() {
-                        self.terminal.feed(&data);
+                // Poll all panes in active tab
+                self.tab_bar.active_tab().poll();
+
+                let renderer = match self.renderer {
+                    Some(ref r) => r,
+                    None => return,
+                };
+
+                let mut vertices: Vec<Vertex> = Vec::new();
+
+                // Tab bar
+                let tab_bar_cells = self.build_tab_bar_cells();
+                if !tab_bar_cells.is_empty() {
+                    renderer.build_vertices(&tab_bar_cells, 0.0, 0.0, &mut vertices);
+                }
+
+                // Pane content
+                let (cx, cy, cw, ch) = self.content_area();
+                let tab = &self.tab_bar.tabs[self.tab_bar.active];
+                let rects = tab.layout(cx, cy, cw, ch);
+                let focused_id = tab.focused_pane_id;
+
+                for rect in &rects {
+                    if let Some(pane) = find_pane_ref(&tab.root, rect.id) {
+                        let is_focused = rect.id == focused_id;
+                        let cells = self.build_pane_cells(pane, is_focused);
+                        renderer.build_vertices(&cells, rect.x, rect.y, &mut vertices);
                     }
                 }
 
-                let cells = self.build_render_cells();
-                if let Some(ref mut renderer) = self.renderer {
-                    match renderer.render(&cells) {
-                        Ok(_) => {}
-                        Err(wgpu::SurfaceError::Lost) => {
-                            let (w, h) = (renderer.width(), renderer.height());
-                            renderer.resize(w, h);
+                // Dividers between panes
+                if rects.len() > 1 {
+                    // Draw divider lines between adjacent panes
+                    for i in 0..rects.len() {
+                        for j in (i + 1)..rects.len() {
+                            let a = &rects[i];
+                            let b = &rects[j];
+                            // Vertical divider (side by side)
+                            if (a.x + a.w - b.x).abs() < 2.0 {
+                                let div_x = a.x + a.w;
+                                let div_y = a.y.min(b.y);
+                                let div_h = a.h.max(b.h);
+                                renderer.build_divider(div_x, div_y, 1.0, div_h, &mut vertices);
+                            }
+                            // Horizontal divider (stacked)
+                            if (a.y + a.h - b.y).abs() < 2.0 {
+                                let div_x = a.x.min(b.x);
+                                let div_y = a.y + a.h;
+                                let div_w = a.w.max(b.w);
+                                renderer.build_divider(div_x, div_y, div_w, 1.0, &mut vertices);
+                            }
                         }
-                        Err(wgpu::SurfaceError::OutOfMemory) => {
-                            event_loop.exit();
+                    }
+                }
+
+                match renderer.submit_frame(&vertices) {
+                    Ok(_) => {}
+                    Err(wgpu::SurfaceError::Lost) => {
+                        if let Some(ref mut r) = self.renderer {
+                            let (w, h) = (r.width(), r.height());
+                            r.resize(w, h);
                         }
-                        Err(e) => {
-                            log::warn!("Render error: {e:?}");
-                        }
+                    }
+                    Err(wgpu::SurfaceError::OutOfMemory) => {
+                        event_loop.exit();
+                    }
+                    Err(e) => {
+                        log::warn!("Render error: {e:?}");
                     }
                 }
 
@@ -460,8 +670,12 @@ fn key_to_bytes(key: &Key, text: &Option<winit::keyboard::SmolStr>) -> Vec<u8> {
 fn main() {
     env_logger::init();
 
+    let config = Config::load();
+
     let event_loop = EventLoop::new().expect("Failed to create event loop");
     let mut app = App::new();
+    app.font_size = config.font.size;
+    app.config = config;
 
     event_loop.run_app(&mut app).expect("Event loop failed");
 }
