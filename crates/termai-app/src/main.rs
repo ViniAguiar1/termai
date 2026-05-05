@@ -56,6 +56,7 @@ struct App {
     cursor_blink_start: Instant,
     selection: Option<Selection>,
     mouse_pressed: bool,
+    mouse_pos: (f64, f64),
     clipboard: Option<arboard::Clipboard>,
 }
 
@@ -72,6 +73,7 @@ impl App {
             cursor_blink_start: Instant::now(),
             selection: None,
             mouse_pressed: false,
+            mouse_pos: (0.0, 0.0),
             clipboard: arboard::Clipboard::new().ok(),
         }
     }
@@ -250,6 +252,40 @@ impl App {
         vec![row]
     }
 
+    /// Check if a click is in the tab bar and switch tabs if so. Returns true if handled.
+    fn handle_tab_bar_click(&mut self, px: f64, py: f64) -> bool {
+        let tab_h = self.tab_bar_pixel_height();
+        if tab_h == 0.0 {
+            return false;
+        }
+
+        let sy = py as f32 * self.scale_factor;
+        if sy >= tab_h {
+            return false; // Click is below tab bar
+        }
+
+        // Determine which tab was clicked based on x position
+        let renderer = match self.renderer {
+            Some(ref r) => r,
+            None => return false,
+        };
+        let (cw, _) = renderer.cell_size();
+        let sx = px as f32 * self.scale_factor;
+        let click_col = (sx / cw).floor() as usize;
+
+        let mut col = 0usize;
+        for (i, tab) in self.tab_bar.tabs.iter().enumerate() {
+            let label_len = format!(" {} {} ", i + 1, tab.title).len() + 1; // +1 for separator
+            if click_col >= col && click_col < col + label_len {
+                self.tab_bar.switch_to(i);
+                return true;
+            }
+            col += label_len;
+        }
+
+        false
+    }
+
     fn zoom(&mut self) {
         if let Some(ref mut renderer) = self.renderer {
             renderer.rebuild_atlas(self.font_size, self.scale_factor);
@@ -379,6 +415,10 @@ impl ApplicationHandler for App {
                 if button == MouseButton::Left {
                     match state {
                         ElementState::Pressed => {
+                            // Check tab bar click first
+                            if self.handle_tab_bar_click(self.mouse_pos.0, self.mouse_pos.1) {
+                                return;
+                            }
                             self.mouse_pressed = true;
                             self.selection = None;
                         }
@@ -390,6 +430,7 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::CursorMoved { position, .. } => {
+                self.mouse_pos = (position.x, position.y);
                 // Click to focus pane
                 if self.mouse_pressed {
                     if let Some(rect) = self.find_pane_at(position.x, position.y) {
