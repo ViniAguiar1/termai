@@ -66,9 +66,9 @@ func runServer(socketPath string) error {
 	// Initialize LLM client
 	llmClient = llm.New()
 	if llmClient != nil {
-		fmt.Fprintln(os.Stderr, "LLM enabled (ANTHROPIC_API_KEY found)")
+		fmt.Fprintf(os.Stderr, "LLM enabled (provider: %s)\n", llmClient.ProviderName())
 	} else {
-		fmt.Fprintln(os.Stderr, "LLM disabled (set ANTHROPIC_API_KEY to enable)")
+		fmt.Fprintln(os.Stderr, "LLM disabled (set ANTHROPIC_API_KEY or OPENAI_API_KEY to enable)")
 	}
 
 	// Clean up stale socket
@@ -122,16 +122,21 @@ func handleConnection(conn net.Conn) {
 		}
 
 		errorOutput := req.Output
-		suggestion := analyzer.AnalyzeCommand(req.Command, errorOutput)
+		var suggestion *analyzer.Suggestion
 
-		// Fall back to LLM if pattern matching found nothing
-		if suggestion == nil && llmClient != nil {
+		// LLM first — provides the best analysis
+		if llmClient != nil {
 			llmSuggestion, err := llmClient.Analyze(req.Command, errorOutput)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "LLM error: %v\n", err)
 			} else {
 				suggestion = llmSuggestion
 			}
+		}
+
+		// Fall back to pattern matching if LLM is unavailable or failed
+		if suggestion == nil {
+			suggestion = analyzer.AnalyzeCommand(req.Command, errorOutput)
 		}
 
 		if suggestion == nil {
