@@ -72,9 +72,9 @@ impl Tab {
         self.root.layout(x, y, w, h)
     }
 
-    /// Poll all panes.
-    pub fn poll(&mut self) {
-        self.root.poll_all();
+    /// Poll all panes. Returns true if any pane received data.
+    pub fn poll(&mut self) -> bool {
+        self.root.poll_all()
     }
 }
 

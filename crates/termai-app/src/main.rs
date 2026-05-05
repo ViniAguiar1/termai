@@ -54,6 +54,18 @@ struct SearchState {
     current: usize,
 }
 
+/// Error patterns that the Go AI analyzer recognizes.
+const ERROR_PATTERNS: &[&str] = &[
+    "command not found",
+    "no space left",
+    "enospc",
+    "address already in use",
+    "eaddrinuse",
+    "module not found",
+    "cannot find module",
+    "permission denied",
+];
+
 struct App {
     config: Config,
     window: Option<Arc<Window>>,
@@ -71,6 +83,8 @@ struct App {
     search: Option<SearchState>,
     ai_client: Option<ai::AiClient>,
     ai_overlay: Option<ai::AiSuggestion>,
+    /// Cooldown: don't send another analysis until this time passes.
+    ai_last_analysis: Instant,
 }
 
 impl App {
@@ -92,6 +106,7 @@ impl App {
             search: None,
             ai_client: Some(ai::AiClient::new()),
             ai_overlay: None,
+            ai_last_analysis: Instant::now(),
         }
     }
 
@@ -477,6 +492,71 @@ impl App {
         vec![row]
     }
 
+    /// Check if the focused pane's recent output contains an error pattern.
+    /// If so, send it to the AI engine for analysis.
+    fn check_for_errors(&mut self) {
+        // Cooldown: wait at least 2 seconds between analyses
+        if self.ai_last_analysis.elapsed() < Duration::from_secs(2) {
+            return;
+        }
+
+        // Don't analyze if overlay is already showing
+        if self.ai_overlay.is_some() {
+            return;
+        }
+
+        let ai_client = match self.ai_client {
+            Some(ref c) => c,
+            None => return,
+        };
+
+        let tab = &mut self.tab_bar.tabs[self.tab_bar.active];
+        let focused_id = tab.focused_pane_id;
+        let pane = match tab.root.find_pane(focused_id) {
+            Some(p) => p,
+            None => return,
+        };
+
+        if pane.recent_output.is_empty() {
+            return;
+        }
+
+        let output_lower = pane.recent_output.to_lowercase();
+
+        // Check for any known error pattern
+        let has_error = ERROR_PATTERNS.iter().any(|p| output_lower.contains(p));
+        if !has_error {
+            return;
+        }
+
+        // Try to extract the last command line from the output.
+        // Heuristic: look for the line containing the error and the line before it.
+        let lines: Vec<&str> = pane.recent_output.lines().collect();
+        let mut error_line = "";
+        let mut command_line = "";
+
+        for (i, line) in lines.iter().enumerate() {
+            let lower = line.to_lowercase();
+            if ERROR_PATTERNS.iter().any(|p| lower.contains(p)) {
+                error_line = line;
+                // The command is often the line before the error, or embedded in it
+                // e.g., "zsh: command not found: gi" — extract "gi"
+                // e.g., "bash: nvm: command not found" — extract "nvm"
+                if i > 0 {
+                    command_line = lines[i - 1];
+                }
+                break;
+            }
+        }
+
+        // Extract the command from shell error messages
+        let command = extract_command_from_error(error_line, command_line);
+
+        ai_client.analyze(&command, error_line, 127);
+        self.ai_last_analysis = Instant::now();
+        pane.clear_recent_output();
+    }
+
     fn build_ai_overlay_cells(&self) -> Vec<Vec<RenderCell>> {
         let suggestion = match self.ai_overlay {
             Some(ref s) => s,
@@ -552,6 +632,36 @@ impl App {
             }
         }
     }
+}
+
+/// Try to extract the failed command from error output.
+/// e.g., "zsh: command not found: gi" → "gi"
+/// e.g., "bash: nvm: command not found" → "nvm"
+fn extract_command_from_error(error_line: &str, command_line: &str) -> String {
+    // "zsh: command not found: <cmd>"
+    if let Some(idx) = error_line.find("command not found: ") {
+        return error_line[idx + "command not found: ".len()..].trim().to_string();
+    }
+    // "bash: <cmd>: command not found"
+    if error_line.contains("command not found") {
+        let parts: Vec<&str> = error_line.split(':').collect();
+        if parts.len() >= 2 {
+            let cmd = parts[1].trim();
+            if !cmd.is_empty() && cmd != "command not found" {
+                return cmd.to_string();
+            }
+        }
+    }
+    // Fall back to the command line (often the prompt line before the error)
+    // Strip common prompt patterns: "user@host path % <cmd>" or "$ <cmd>"
+    let trimmed = command_line.trim();
+    if let Some(idx) = trimmed.rfind("% ") {
+        return trimmed[idx + 2..].to_string();
+    }
+    if let Some(idx) = trimmed.rfind("$ ") {
+        return trimmed[idx + 2..].to_string();
+    }
+    trimmed.to_string()
 }
 
 fn find_pane_ref(node: &pane::PaneNode, id: u64) -> Option<&pane::Pane> {
@@ -915,6 +1025,8 @@ impl ApplicationHandler for App {
                 if let Some(pane) = tab.root.find_pane(id) {
                     let bytes = key_to_bytes(&event.logical_key, &event.text);
                     if !bytes.is_empty() {
+                        // Dismiss AI overlay on new input
+                        self.ai_overlay = None;
                         pane.write(&bytes);
                     }
                 }
@@ -922,7 +1034,12 @@ impl ApplicationHandler for App {
 
             WindowEvent::RedrawRequested => {
                 // Poll all panes in active tab
-                self.tab_bar.active_tab().poll();
+                let got_data = self.tab_bar.active_tab().poll();
+
+                // Check for errors in PTY output and send to AI
+                if got_data {
+                    self.check_for_errors();
+                }
 
                 // Poll AI client for suggestions
                 if let Some(ref ai_client) = self.ai_client {

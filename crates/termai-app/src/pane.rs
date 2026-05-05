@@ -11,6 +11,8 @@ pub struct Pane {
     pub pty: PtySession,
     pub pty_rx: mpsc::Receiver<Vec<u8>>,
     pub id: u64,
+    /// Rolling buffer of recent PTY output (last ~4KB) for error detection.
+    pub recent_output: String,
 }
 
 static NEXT_PANE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -45,14 +47,31 @@ impl Pane {
             pty,
             pty_rx: rx,
             id,
+            recent_output: String::new(),
         }
     }
 
     /// Drain any pending PTY output into the terminal.
-    pub fn poll(&mut self) {
+    /// Returns true if new data was received.
+    pub fn poll(&mut self) -> bool {
+        let mut got_data = false;
         while let Ok(data) = self.pty_rx.try_recv() {
             self.terminal.feed(&data);
+            // Append to recent output buffer (lossy UTF-8 for error detection)
+            self.recent_output.push_str(&String::from_utf8_lossy(&data));
+            // Keep only last 4KB
+            if self.recent_output.len() > 4096 {
+                let start = self.recent_output.len() - 4096;
+                self.recent_output = self.recent_output[start..].to_string();
+            }
+            got_data = true;
         }
+        got_data
+    }
+
+    /// Clear the recent output buffer (after sending to AI for analysis).
+    pub fn clear_recent_output(&mut self) {
+        self.recent_output.clear();
     }
 
     /// Write bytes to the PTY (keyboard input).
@@ -94,13 +113,14 @@ impl PaneNode {
         PaneNode::Leaf(Pane::new(cols, rows))
     }
 
-    /// Poll all panes in the tree.
-    pub fn poll_all(&mut self) {
+    /// Poll all panes in the tree. Returns true if any pane received data.
+    pub fn poll_all(&mut self) -> bool {
         match self {
             PaneNode::Leaf(pane) => pane.poll(),
             PaneNode::Split { first, second, .. } => {
-                first.poll_all();
-                second.poll_all();
+                let a = first.poll_all();
+                let b = second.poll_all();
+                a || b
             }
         }
     }
