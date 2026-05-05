@@ -1,7 +1,7 @@
+use std::io::Read;
+use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
-use std::sync::mpsc;
-use std::io::Read;
 
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
@@ -12,6 +12,9 @@ use winit::window::{Window, WindowId};
 use termai_core::Terminal;
 use termai_pty::PtySession;
 use termai_renderer::{RenderCell, Renderer};
+
+const BG_COLOR: [f32; 4] = [0.12, 0.12, 0.14, 1.0];
+const FG_COLOR: [f32; 4] = [0.9, 0.9, 0.9, 1.0];
 
 struct App {
     window: Option<Arc<Window>>,
@@ -33,9 +36,6 @@ impl App {
     }
 
     fn build_render_cells(&self) -> Vec<Vec<RenderCell>> {
-        let fg = [1.0, 1.0, 1.0, 1.0];
-        let bg = [0.1, 0.1, 0.12, 1.0];
-
         self.terminal
             .grid
             .iter()
@@ -43,8 +43,8 @@ impl App {
                 row.iter()
                     .map(|cell| RenderCell {
                         ch: cell.c,
-                        fg,
-                        bg,
+                        fg: FG_COLOR,
+                        bg: BG_COLOR,
                     })
                     .collect()
             })
@@ -60,7 +60,7 @@ impl ApplicationHandler for App {
 
         let attrs = Window::default_attributes()
             .with_title("termAI")
-            .with_inner_size(winit::dpi::LogicalSize::new(960, 600));
+            .with_inner_size(winit::dpi::LogicalSize::new(1024, 640));
 
         let window = Arc::new(
             event_loop
@@ -68,17 +68,15 @@ impl ApplicationHandler for App {
                 .expect("Failed to create window"),
         );
 
-        let renderer = Renderer::new(window.clone());
+        let scale_factor = window.scale_factor() as f32;
+        let renderer = Renderer::new(window.clone(), scale_factor);
 
-        // Resize terminal grid to match window
         let (cols, rows) = renderer.grid_size();
         self.terminal = Terminal::new(cols as usize, rows as usize);
 
-        // Spawn PTY
-        let mut pty = PtySession::spawn(cols as u16, rows as u16)
-            .expect("Failed to spawn PTY");
+        let mut pty =
+            PtySession::spawn(cols as u16, rows as u16).expect("Failed to spawn PTY");
 
-        // Read PTY output in a background thread
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
         let mut pty_reader = pty.take_reader();
         thread::spawn(move || {
@@ -113,6 +111,12 @@ impl ApplicationHandler for App {
                     renderer.resize(size.width, size.height);
                     let (cols, rows) = renderer.grid_size();
                     self.terminal = Terminal::new(cols as usize, rows as usize);
+                }
+            }
+
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                if let Some(ref mut renderer) = self.renderer {
+                    renderer.set_scale_factor(scale_factor as f32);
                 }
             }
 

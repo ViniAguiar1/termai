@@ -7,7 +7,7 @@ use wgpu::util::DeviceExt;
 
 // Embedded monospace font (JetBrains Mono)
 const FONT_BYTES: &[u8] = include_bytes!("../assets/JetBrainsMono-Regular.ttf");
-const FONT_SIZE: f32 = 16.0;
+const BASE_FONT_SIZE: f32 = 32.0;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -50,7 +50,7 @@ pub struct Renderer {
 
 impl Renderer {
     /// Create a new renderer attached to the given window.
-    pub fn new(window: Arc<winit::window::Window>) -> Self {
+    pub fn new(window: Arc<winit::window::Window>, scale_factor: f32) -> Self {
         let size = window.inner_size();
         let width = size.width.max(1);
         let height = size.height.max(1);
@@ -103,8 +103,9 @@ impl Renderer {
         };
         surface.configure(&device, &surface_config);
 
-        // Build glyph atlas
-        let atlas = GlyphAtlas::new(FONT_BYTES, FONT_SIZE);
+        // Build glyph atlas scaled for HiDPI
+        let font_size = BASE_FONT_SIZE * scale_factor;
+        let atlas = GlyphAtlas::new(FONT_BYTES, font_size);
 
         // Upload atlas texture to GPU
         let atlas_texture = device.create_texture_with_data(
@@ -222,31 +223,26 @@ impl Renderer {
                     array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[
-                        // position
                         wgpu::VertexAttribute {
                             offset: 0,
                             shader_location: 0,
                             format: wgpu::VertexFormat::Float32x2,
                         },
-                        // uv
                         wgpu::VertexAttribute {
                             offset: 8,
                             shader_location: 1,
                             format: wgpu::VertexFormat::Float32x2,
                         },
-                        // fg_color
                         wgpu::VertexAttribute {
                             offset: 16,
                             shader_location: 2,
                             format: wgpu::VertexFormat::Float32x4,
                         },
-                        // bg_color
                         wgpu::VertexAttribute {
                             offset: 32,
                             shader_location: 3,
                             format: wgpu::VertexFormat::Float32x4,
                         },
-                        // is_bg
                         wgpu::VertexAttribute {
                             offset: 48,
                             shader_location: 4,
@@ -307,6 +303,12 @@ impl Renderer {
         };
         self.queue
             .write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
+    }
+
+    /// Update scale factor (e.g. when moving between displays).
+    pub fn set_scale_factor(&mut self, _scale_factor: f32) {
+        // Would need to rebuild atlas with new font size.
+        // For now, atlas is built at init with the initial scale factor.
     }
 
     pub fn width(&self) -> u32 {
@@ -389,9 +391,9 @@ impl Renderer {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.1,
-                            g: 0.1,
-                            b: 0.12,
+                            r: 0.12,
+                            g: 0.12,
+                            b: 0.14,
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,
@@ -468,7 +470,6 @@ fn push_quad(
         _padding: [0.0],
     };
 
-    // Two triangles forming a quad
     vertices.push(v(x0, y0, uv_min[0], uv_min[1]));
     vertices.push(v(x1, y0, uv_max[0], uv_min[1]));
     vertices.push(v(x0, y1, uv_min[0], uv_max[1]));
