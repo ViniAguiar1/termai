@@ -6,6 +6,7 @@ pub struct Cell {
     pub c: char,
     pub fg: Color,
     pub bg: Color,
+    pub bold: bool,
 }
 
 impl Default for Cell {
@@ -14,6 +15,7 @@ impl Default for Cell {
             c: ' ',
             fg: Color::Default,
             bg: Color::Default,
+            bold: false,
         }
     }
 }
@@ -25,6 +27,24 @@ pub enum Color {
     Rgb(u8, u8, u8),
 }
 
+/// Current text attributes applied to new characters.
+#[derive(Clone, Debug)]
+struct Attrs {
+    fg: Color,
+    bg: Color,
+    bold: bool,
+}
+
+impl Default for Attrs {
+    fn default() -> Self {
+        Self {
+            fg: Color::Default,
+            bg: Color::Default,
+            bold: false,
+        }
+    }
+}
+
 /// Minimal terminal state: grid of cells + cursor position.
 pub struct Terminal {
     pub cols: usize,
@@ -32,6 +52,7 @@ pub struct Terminal {
     pub grid: Vec<Vec<Cell>>,
     pub cursor_x: usize,
     pub cursor_y: usize,
+    attrs: Attrs,
 }
 
 impl Terminal {
@@ -43,6 +64,7 @@ impl Terminal {
             grid,
             cursor_x: 0,
             cursor_y: 0,
+            attrs: Attrs::default(),
         }
     }
 
@@ -67,6 +89,92 @@ impl Terminal {
             self.cursor_y += 1;
         }
     }
+
+    fn apply_sgr(&mut self, params: &Params) {
+        let mut iter = params.iter();
+
+        // If no params, treat as reset (CSI 0 m)
+        let first = match iter.next() {
+            Some(p) => p,
+            None => {
+                self.attrs = Attrs::default();
+                return;
+            }
+        };
+
+        let mut subparams = first.iter().copied();
+        loop {
+            let code = match subparams.next() {
+                Some(c) => c,
+                None => match iter.next() {
+                    Some(p) => match p.first() {
+                        Some(&c) => c,
+                        None => break,
+                    },
+                    None => break,
+                },
+            };
+
+            match code {
+                0 => self.attrs = Attrs::default(),
+                1 => self.attrs.bold = true,
+                22 => self.attrs.bold = false,
+                // Standard foreground colors (30-37)
+                30..=37 => self.attrs.fg = Color::Indexed((code - 30) as u8),
+                // Bright foreground colors (90-97)
+                90..=97 => self.attrs.fg = Color::Indexed((code - 90 + 8) as u8),
+                38 => {
+                    self.parse_extended_color(&mut iter, &mut subparams, true);
+                }
+                39 => self.attrs.fg = Color::Default,
+                // Standard background colors (40-47)
+                40..=47 => self.attrs.bg = Color::Indexed((code - 40) as u8),
+                // Bright background colors (100-107)
+                100..=107 => self.attrs.bg = Color::Indexed((code - 100 + 8) as u8),
+                48 => {
+                    self.parse_extended_color(&mut iter, &mut subparams, false);
+                }
+                49 => self.attrs.bg = Color::Default,
+                _ => {}
+            }
+        }
+    }
+
+    fn parse_extended_color<'a>(
+        &mut self,
+        iter: &mut impl Iterator<Item = &'a [u16]>,
+        _subparams: &mut impl Iterator<Item = u16>,
+        is_fg: bool,
+    ) {
+        // Next param determines the mode: 5 = indexed, 2 = RGB
+        let mode = iter.next().and_then(|p| p.first().copied());
+        match mode {
+            Some(5) => {
+                // 256-color: CSI 38;5;N m
+                if let Some(idx) = iter.next().and_then(|p| p.first().copied()) {
+                    let color = Color::Indexed(idx as u8);
+                    if is_fg {
+                        self.attrs.fg = color;
+                    } else {
+                        self.attrs.bg = color;
+                    }
+                }
+            }
+            Some(2) => {
+                // True color: CSI 38;2;R;G;B m
+                let r = iter.next().and_then(|p| p.first().copied()).unwrap_or(0) as u8;
+                let g = iter.next().and_then(|p| p.first().copied()).unwrap_or(0) as u8;
+                let b = iter.next().and_then(|p| p.first().copied()).unwrap_or(0) as u8;
+                let color = Color::Rgb(r, g, b);
+                if is_fg {
+                    self.attrs.fg = color;
+                } else {
+                    self.attrs.bg = color;
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 impl Perform for Terminal {
@@ -74,7 +182,11 @@ impl Perform for Terminal {
         if self.cursor_x >= self.cols {
             self.newline();
         }
-        self.grid[self.cursor_y][self.cursor_x].c = c;
+        let cell = &mut self.grid[self.cursor_y][self.cursor_x];
+        cell.c = c;
+        cell.fg = self.attrs.fg;
+        cell.bg = self.attrs.bg;
+        cell.bold = self.attrs.bold;
         self.cursor_x += 1;
     }
 
@@ -83,7 +195,6 @@ impl Perform for Terminal {
             b'\n' | 0x0B | 0x0C => self.newline(),
             b'\r' => self.cursor_x = 0,
             b'\t' => {
-                // Tab stops every 8 columns
                 let next_tab = (self.cursor_x / 8 + 1) * 8;
                 self.cursor_x = next_tab.min(self.cols - 1);
             }
@@ -100,6 +211,7 @@ impl Perform for Terminal {
     fn put(&mut self, _byte: u8) {}
     fn unhook(&mut self) {}
     fn osc_dispatch(&mut self, _params: &[&[u8]], _bell_terminated: bool) {}
+
     fn csi_dispatch(
         &mut self,
         params: &Params,
@@ -107,19 +219,26 @@ impl Perform for Terminal {
         _ignore: bool,
         action: char,
     ) {
+        match action {
+            // SGR - Select Graphic Rendition (colors/attributes)
+            'm' => {
+                self.apply_sgr(params);
+                return;
+            }
+            _ => {}
+        }
+
         let mut params_iter = params.iter();
-        let first = params_iter.next().and_then(|p| p.first().copied()).unwrap_or(1) as usize;
+        let first = params_iter
+            .next()
+            .and_then(|p| p.first().copied())
+            .unwrap_or(1) as usize;
 
         match action {
-            // Cursor Up
             'A' => self.cursor_y = self.cursor_y.saturating_sub(first.max(1)),
-            // Cursor Down
             'B' => self.cursor_y = (self.cursor_y + first.max(1)).min(self.rows - 1),
-            // Cursor Forward
             'C' => self.cursor_x = (self.cursor_x + first.max(1)).min(self.cols - 1),
-            // Cursor Back
             'D' => self.cursor_x = self.cursor_x.saturating_sub(first.max(1)),
-            // Cursor Position (H)
             'H' | 'f' => {
                 let row = first.saturating_sub(1).min(self.rows - 1);
                 let col = params_iter
@@ -130,41 +249,33 @@ impl Perform for Terminal {
                 self.cursor_y = row;
                 self.cursor_x = col;
             }
-            // Erase in Display
-            'J' => {
-                match first {
-                    0 => {
-                        // Clear from cursor to end
-                        for x in self.cursor_x..self.cols {
-                            self.grid[self.cursor_y][x] = Cell::default();
-                        }
-                        for y in (self.cursor_y + 1)..self.rows {
-                            self.grid[y] = vec![Cell::default(); self.cols];
-                        }
+            'J' => match first {
+                0 => {
+                    for x in self.cursor_x..self.cols {
+                        self.grid[self.cursor_y][x] = Cell::default();
                     }
-                    2 | 3 => {
-                        // Clear entire screen
-                        self.grid = vec![vec![Cell::default(); self.cols]; self.rows];
-                        self.cursor_x = 0;
-                        self.cursor_y = 0;
+                    for y in (self.cursor_y + 1)..self.rows {
+                        self.grid[y] = vec![Cell::default(); self.cols];
                     }
-                    _ => {}
                 }
-            }
-            // Erase in Line
-            'K' => {
-                match first {
-                    0 => {
-                        for x in self.cursor_x..self.cols {
-                            self.grid[self.cursor_y][x] = Cell::default();
-                        }
-                    }
-                    2 => {
-                        self.grid[self.cursor_y] = vec![Cell::default(); self.cols];
-                    }
-                    _ => {}
+                2 | 3 => {
+                    self.grid = vec![vec![Cell::default(); self.cols]; self.rows];
+                    self.cursor_x = 0;
+                    self.cursor_y = 0;
                 }
-            }
+                _ => {}
+            },
+            'K' => match first {
+                0 => {
+                    for x in self.cursor_x..self.cols {
+                        self.grid[self.cursor_y][x] = Cell::default();
+                    }
+                }
+                2 => {
+                    self.grid[self.cursor_y] = vec![Cell::default(); self.cols];
+                }
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -190,5 +301,38 @@ mod tests {
         let mut term = Terminal::new(80, 24);
         term.feed(b"\x1b[5;10H*");
         assert_eq!(term.grid[4][9].c, '*');
+    }
+
+    #[test]
+    fn test_sgr_foreground_color() {
+        let mut term = Terminal::new(80, 24);
+        // ESC[31m = red foreground, then print 'X'
+        term.feed(b"\x1b[31mX");
+        assert_eq!(term.grid[0][0].c, 'X');
+        assert_eq!(term.grid[0][0].fg, Color::Indexed(1));
+    }
+
+    #[test]
+    fn test_sgr_reset() {
+        let mut term = Terminal::new(80, 24);
+        term.feed(b"\x1b[31mR\x1b[0mN");
+        assert_eq!(term.grid[0][0].fg, Color::Indexed(1));
+        assert_eq!(term.grid[0][1].fg, Color::Default);
+    }
+
+    #[test]
+    fn test_sgr_256_color() {
+        let mut term = Terminal::new(80, 24);
+        // ESC[38;5;208m = 256-color orange foreground
+        term.feed(b"\x1b[38;5;208mX");
+        assert_eq!(term.grid[0][0].fg, Color::Indexed(208));
+    }
+
+    #[test]
+    fn test_sgr_truecolor() {
+        let mut term = Terminal::new(80, 24);
+        // ESC[38;2;255;128;0m = RGB foreground
+        term.feed(b"\x1b[38;2;255;128;0mX");
+        assert_eq!(term.grid[0][0].fg, Color::Rgb(255, 128, 0));
     }
 }
