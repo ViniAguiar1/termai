@@ -7,6 +7,8 @@ pub struct Cell {
     pub fg: Color,
     pub bg: Color,
     pub bold: bool,
+    pub underline: bool,
+    pub inverse: bool,
 }
 
 impl Default for Cell {
@@ -16,6 +18,8 @@ impl Default for Cell {
             fg: Color::Default,
             bg: Color::Default,
             bold: false,
+            underline: false,
+            inverse: false,
         }
     }
 }
@@ -27,12 +31,21 @@ pub enum Color {
     Rgb(u8, u8, u8),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CursorStyle {
+    Block,
+    Underline,
+    Bar,
+}
+
 /// Current text attributes applied to new characters.
 #[derive(Clone, Debug)]
 struct Attrs {
     fg: Color,
     bg: Color,
     bold: bool,
+    underline: bool,
+    inverse: bool,
 }
 
 impl Default for Attrs {
@@ -41,17 +54,43 @@ impl Default for Attrs {
             fg: Color::Default,
             bg: Color::Default,
             bold: false,
+            underline: false,
+            inverse: false,
         }
     }
 }
 
-/// Minimal terminal state: grid of cells + cursor position.
+/// Terminal state machine with scrollback buffer.
 pub struct Terminal {
     pub cols: usize,
     pub rows: usize,
     pub grid: Vec<Vec<Cell>>,
     pub cursor_x: usize,
     pub cursor_y: usize,
+    pub cursor_visible: bool,
+    pub cursor_style: CursorStyle,
+
+    /// Scrollback buffer: lines that scrolled off the top.
+    pub scrollback: Vec<Vec<Cell>>,
+    pub max_scrollback: usize,
+    /// How many lines the viewport is scrolled up (0 = at bottom).
+    pub scroll_offset: usize,
+
+    /// Alternate screen buffer (used by vim, htop, etc.)
+    alt_grid: Vec<Vec<Cell>>,
+    alt_cursor_x: usize,
+    alt_cursor_y: usize,
+    pub using_alt_screen: bool,
+
+    /// Scroll region (top..=bottom inclusive row indices).
+    scroll_top: usize,
+    scroll_bottom: usize,
+
+    /// Saved cursor position (for ESC 7 / ESC 8).
+    saved_cursor_x: usize,
+    saved_cursor_y: usize,
+    saved_attrs: Attrs,
+
     attrs: Attrs,
 }
 
@@ -64,6 +103,20 @@ impl Terminal {
             grid,
             cursor_x: 0,
             cursor_y: 0,
+            cursor_visible: true,
+            cursor_style: CursorStyle::Block,
+            scrollback: Vec::new(),
+            max_scrollback: 10_000,
+            scroll_offset: 0,
+            alt_grid: vec![vec![Cell::default(); cols]; rows],
+            alt_cursor_x: 0,
+            alt_cursor_y: 0,
+            using_alt_screen: false,
+            scroll_top: 0,
+            scroll_bottom: rows.saturating_sub(1),
+            saved_cursor_x: 0,
+            saved_cursor_y: 0,
+            saved_attrs: Attrs::default(),
             attrs: Attrs::default(),
         }
     }
@@ -74,26 +127,168 @@ impl Terminal {
         for &byte in bytes {
             parser.advance(self, byte);
         }
+        // New output arrived — snap to bottom
+        self.scroll_offset = 0;
     }
 
-    fn scroll_up(&mut self) {
-        self.grid.remove(0);
-        self.grid.push(vec![Cell::default(); self.cols]);
+    /// Get the visible grid (accounting for scroll offset into scrollback).
+    pub fn visible_grid(&self) -> Vec<&Vec<Cell>> {
+        if self.scroll_offset == 0 || self.using_alt_screen {
+            return self.grid.iter().collect();
+        }
+
+        let sb_len = self.scrollback.len();
+        let offset = self.scroll_offset.min(sb_len);
+        let sb_start = sb_len - offset;
+
+        let mut visible = Vec::with_capacity(self.rows);
+
+        // Lines from scrollback
+        for i in sb_start..sb_len {
+            if visible.len() >= self.rows {
+                break;
+            }
+            visible.push(&self.scrollback[i]);
+        }
+
+        // Lines from current grid
+        for row in &self.grid {
+            if visible.len() >= self.rows {
+                break;
+            }
+            visible.push(row);
+        }
+
+        visible
+    }
+
+    /// Scroll the viewport up by `lines` lines.
+    pub fn scroll_viewport_up(&mut self, lines: usize) {
+        let max = self.scrollback.len();
+        self.scroll_offset = (self.scroll_offset + lines).min(max);
+    }
+
+    /// Scroll the viewport down by `lines` lines.
+    pub fn scroll_viewport_down(&mut self, lines: usize) {
+        self.scroll_offset = self.scroll_offset.saturating_sub(lines);
+    }
+
+    /// Extract text from a rectangular region (for copy).
+    pub fn get_text(&self, start_col: usize, start_row: usize, end_col: usize, end_row: usize) -> String {
+        let visible = self.visible_grid();
+        let mut text = String::new();
+
+        for row_idx in start_row..=end_row.min(visible.len() - 1) {
+            let row = visible[row_idx];
+            let col_start = if row_idx == start_row { start_col } else { 0 };
+            let col_end = if row_idx == end_row {
+                end_col.min(self.cols)
+            } else {
+                self.cols
+            };
+
+            for col in col_start..col_end {
+                if col < row.len() {
+                    text.push(row[col].c);
+                }
+            }
+
+            // Trim trailing spaces and add newline between rows
+            if row_idx < end_row {
+                let trimmed = text.trim_end_matches(' ');
+                text.truncate(trimmed.len());
+                text.push('\n');
+            }
+        }
+
+        let trimmed = text.trim_end_matches(' ');
+        trimmed.to_string()
+    }
+
+    fn scroll_up_region(&mut self) {
+        let removed = self.grid.remove(self.scroll_top);
+
+        // Only save to scrollback if scrolling the full screen from top
+        if self.scroll_top == 0 && !self.using_alt_screen {
+            self.scrollback.push(removed);
+            if self.scrollback.len() > self.max_scrollback {
+                self.scrollback.remove(0);
+            }
+        }
+
+        self.grid
+            .insert(self.scroll_bottom, vec![Cell::default(); self.cols]);
+    }
+
+    fn scroll_down_region(&mut self) {
+        self.grid.remove(self.scroll_bottom);
+        self.grid
+            .insert(self.scroll_top, vec![Cell::default(); self.cols]);
     }
 
     fn newline(&mut self) {
         self.cursor_x = 0;
-        if self.cursor_y + 1 >= self.rows {
-            self.scroll_up();
-        } else {
+        if self.cursor_y == self.scroll_bottom {
+            self.scroll_up_region();
+        } else if self.cursor_y + 1 < self.rows {
             self.cursor_y += 1;
         }
+    }
+
+    fn linefeed(&mut self) {
+        if self.cursor_y == self.scroll_bottom {
+            self.scroll_up_region();
+        } else if self.cursor_y + 1 < self.rows {
+            self.cursor_y += 1;
+        }
+    }
+
+    fn reverse_index(&mut self) {
+        if self.cursor_y == self.scroll_top {
+            self.scroll_down_region();
+        } else if self.cursor_y > 0 {
+            self.cursor_y -= 1;
+        }
+    }
+
+    fn enter_alt_screen(&mut self) {
+        if self.using_alt_screen {
+            return;
+        }
+        self.alt_grid = self.grid.clone();
+        self.alt_cursor_x = self.cursor_x;
+        self.alt_cursor_y = self.cursor_y;
+        self.grid = vec![vec![Cell::default(); self.cols]; self.rows];
+        self.cursor_x = 0;
+        self.cursor_y = 0;
+        self.using_alt_screen = true;
+    }
+
+    fn exit_alt_screen(&mut self) {
+        if !self.using_alt_screen {
+            return;
+        }
+        self.grid = std::mem::take(&mut self.alt_grid);
+        self.cursor_x = self.alt_cursor_x;
+        self.cursor_y = self.alt_cursor_y;
+        self.using_alt_screen = false;
+    }
+
+    fn save_cursor(&mut self) {
+        self.saved_cursor_x = self.cursor_x;
+        self.saved_cursor_y = self.cursor_y;
+        self.saved_attrs = self.attrs.clone();
+    }
+
+    fn restore_cursor(&mut self) {
+        self.cursor_x = self.saved_cursor_x.min(self.cols.saturating_sub(1));
+        self.cursor_y = self.saved_cursor_y.min(self.rows.saturating_sub(1));
+        self.attrs = self.saved_attrs.clone();
     }
 
     fn apply_sgr(&mut self, params: &Params) {
         let mut iter = params.iter();
 
-        // If no params, treat as reset (CSI 0 m)
         let first = match iter.next() {
             Some(p) => p,
             None => {
@@ -118,18 +313,18 @@ impl Terminal {
             match code {
                 0 => self.attrs = Attrs::default(),
                 1 => self.attrs.bold = true,
+                4 => self.attrs.underline = true,
+                7 => self.attrs.inverse = true,
                 22 => self.attrs.bold = false,
-                // Standard foreground colors (30-37)
+                24 => self.attrs.underline = false,
+                27 => self.attrs.inverse = false,
                 30..=37 => self.attrs.fg = Color::Indexed((code - 30) as u8),
-                // Bright foreground colors (90-97)
                 90..=97 => self.attrs.fg = Color::Indexed((code - 90 + 8) as u8),
                 38 => {
                     self.parse_extended_color(&mut iter, &mut subparams, true);
                 }
                 39 => self.attrs.fg = Color::Default,
-                // Standard background colors (40-47)
                 40..=47 => self.attrs.bg = Color::Indexed((code - 40) as u8),
-                // Bright background colors (100-107)
                 100..=107 => self.attrs.bg = Color::Indexed((code - 100 + 8) as u8),
                 48 => {
                     self.parse_extended_color(&mut iter, &mut subparams, false);
@@ -146,11 +341,9 @@ impl Terminal {
         _subparams: &mut impl Iterator<Item = u16>,
         is_fg: bool,
     ) {
-        // Next param determines the mode: 5 = indexed, 2 = RGB
         let mode = iter.next().and_then(|p| p.first().copied());
         match mode {
             Some(5) => {
-                // 256-color: CSI 38;5;N m
                 if let Some(idx) = iter.next().and_then(|p| p.first().copied()) {
                     let color = Color::Indexed(idx as u8);
                     if is_fg {
@@ -161,7 +354,6 @@ impl Terminal {
                 }
             }
             Some(2) => {
-                // True color: CSI 38;2;R;G;B m
                 let r = iter.next().and_then(|p| p.first().copied()).unwrap_or(0) as u8;
                 let g = iter.next().and_then(|p| p.first().copied()).unwrap_or(0) as u8;
                 let b = iter.next().and_then(|p| p.first().copied()).unwrap_or(0) as u8;
@@ -187,12 +379,14 @@ impl Perform for Terminal {
         cell.fg = self.attrs.fg;
         cell.bg = self.attrs.bg;
         cell.bold = self.attrs.bold;
+        cell.underline = self.attrs.underline;
+        cell.inverse = self.attrs.inverse;
         self.cursor_x += 1;
     }
 
     fn execute(&mut self, byte: u8) {
         match byte {
-            b'\n' | 0x0B | 0x0C => self.newline(),
+            b'\n' | 0x0B | 0x0C => self.linefeed(),
             b'\r' => self.cursor_x = 0,
             b'\t' => {
                 let next_tab = (self.cursor_x / 8 + 1) * 8;
@@ -203,6 +397,7 @@ impl Perform for Terminal {
                     self.cursor_x -= 1;
                 }
             }
+            b'\x07' => {} // BEL — ignore for now
             _ => {}
         }
     }
@@ -215,40 +410,95 @@ impl Perform for Terminal {
     fn csi_dispatch(
         &mut self,
         params: &Params,
-        _intermediates: &[u8],
+        intermediates: &[u8],
         _ignore: bool,
         action: char,
     ) {
-        match action {
-            // SGR - Select Graphic Rendition (colors/attributes)
-            'm' => {
-                self.apply_sgr(params);
-                return;
+        // Handle private mode sequences (CSI ? Ps h/l)
+        if intermediates.first() == Some(&b'?') {
+            let mode = params
+                .iter()
+                .next()
+                .and_then(|p| p.first().copied())
+                .unwrap_or(0);
+
+            match action {
+                'h' => match mode {
+                    25 => self.cursor_visible = true,
+                    1049 => self.enter_alt_screen(),
+                    1047 => self.enter_alt_screen(),
+                    _ => {}
+                },
+                'l' => match mode {
+                    25 => self.cursor_visible = false,
+                    1049 => self.exit_alt_screen(),
+                    1047 => self.exit_alt_screen(),
+                    _ => {}
+                },
+                _ => {}
             }
-            _ => {}
+            return;
+        }
+
+        // SGR
+        if action == 'm' {
+            self.apply_sgr(params);
+            return;
         }
 
         let mut params_iter = params.iter();
         let first = params_iter
             .next()
             .and_then(|p| p.first().copied())
-            .unwrap_or(1) as usize;
+            .unwrap_or(0);
 
         match action {
-            'A' => self.cursor_y = self.cursor_y.saturating_sub(first.max(1)),
-            'B' => self.cursor_y = (self.cursor_y + first.max(1)).min(self.rows - 1),
-            'C' => self.cursor_x = (self.cursor_x + first.max(1)).min(self.cols - 1),
-            'D' => self.cursor_x = self.cursor_x.saturating_sub(first.max(1)),
+            // Cursor movement
+            'A' => {
+                let n = (first as usize).max(1);
+                self.cursor_y = self.cursor_y.saturating_sub(n);
+            }
+            'B' => {
+                let n = (first as usize).max(1);
+                self.cursor_y = (self.cursor_y + n).min(self.rows - 1);
+            }
+            'C' => {
+                let n = (first as usize).max(1);
+                self.cursor_x = (self.cursor_x + n).min(self.cols - 1);
+            }
+            'D' => {
+                let n = (first as usize).max(1);
+                self.cursor_x = self.cursor_x.saturating_sub(n);
+            }
+            // Cursor Next Line
+            'E' => {
+                let n = (first as usize).max(1);
+                self.cursor_y = (self.cursor_y + n).min(self.rows - 1);
+                self.cursor_x = 0;
+            }
+            // Cursor Previous Line
+            'F' => {
+                let n = (first as usize).max(1);
+                self.cursor_y = self.cursor_y.saturating_sub(n);
+                self.cursor_x = 0;
+            }
+            // Cursor Horizontal Absolute
+            'G' => {
+                let col = (first as usize).max(1).saturating_sub(1).min(self.cols - 1);
+                self.cursor_x = col;
+            }
+            // Cursor Position
             'H' | 'f' => {
-                let row = first.saturating_sub(1).min(self.rows - 1);
+                let row = (first as usize).max(1).saturating_sub(1).min(self.rows - 1);
                 let col = params_iter
                     .next()
                     .and_then(|p| p.first().copied())
                     .unwrap_or(1) as usize;
-                let col = col.saturating_sub(1).min(self.cols - 1);
+                let col = col.max(1).saturating_sub(1).min(self.cols - 1);
                 self.cursor_y = row;
                 self.cursor_x = col;
             }
+            // Erase in Display
             'J' => match first {
                 0 => {
                     for x in self.cursor_x..self.cols {
@@ -258,16 +508,28 @@ impl Perform for Terminal {
                         self.grid[y] = vec![Cell::default(); self.cols];
                     }
                 }
+                1 => {
+                    for y in 0..self.cursor_y {
+                        self.grid[y] = vec![Cell::default(); self.cols];
+                    }
+                    for x in 0..=self.cursor_x.min(self.cols - 1) {
+                        self.grid[self.cursor_y][x] = Cell::default();
+                    }
+                }
                 2 | 3 => {
                     self.grid = vec![vec![Cell::default(); self.cols]; self.rows];
-                    self.cursor_x = 0;
-                    self.cursor_y = 0;
                 }
                 _ => {}
             },
+            // Erase in Line
             'K' => match first {
                 0 => {
                     for x in self.cursor_x..self.cols {
+                        self.grid[self.cursor_y][x] = Cell::default();
+                    }
+                }
+                1 => {
+                    for x in 0..=self.cursor_x.min(self.cols - 1) {
                         self.grid[self.cursor_y][x] = Cell::default();
                     }
                 }
@@ -276,11 +538,141 @@ impl Perform for Terminal {
                 }
                 _ => {}
             },
+            // Insert Lines
+            'L' => {
+                let n = (first as usize).max(1);
+                for _ in 0..n {
+                    if self.cursor_y <= self.scroll_bottom {
+                        self.grid.remove(self.scroll_bottom);
+                        self.grid
+                            .insert(self.cursor_y, vec![Cell::default(); self.cols]);
+                    }
+                }
+            }
+            // Delete Lines
+            'M' => {
+                let n = (first as usize).max(1);
+                for _ in 0..n {
+                    if self.cursor_y <= self.scroll_bottom {
+                        self.grid.remove(self.cursor_y);
+                        self.grid
+                            .insert(self.scroll_bottom, vec![Cell::default(); self.cols]);
+                    }
+                }
+            }
+            // Delete Characters
+            'P' => {
+                let n = (first as usize).max(1).min(self.cols - self.cursor_x);
+                let row = &mut self.grid[self.cursor_y];
+                for _ in 0..n {
+                    if self.cursor_x < row.len() {
+                        row.remove(self.cursor_x);
+                        row.push(Cell::default());
+                    }
+                }
+            }
+            // Scroll Up
+            'S' => {
+                let n = (first as usize).max(1);
+                for _ in 0..n {
+                    self.scroll_up_region();
+                }
+            }
+            // Scroll Down
+            'T' => {
+                let n = (first as usize).max(1);
+                for _ in 0..n {
+                    self.scroll_down_region();
+                }
+            }
+            // Erase Characters
+            'X' => {
+                let n = (first as usize).max(1);
+                for i in 0..n {
+                    let x = self.cursor_x + i;
+                    if x < self.cols {
+                        self.grid[self.cursor_y][x] = Cell::default();
+                    }
+                }
+            }
+            // Cursor Backward Tabulation
+            'Z' => {
+                let n = (first as usize).max(1);
+                for _ in 0..n {
+                    if self.cursor_x == 0 {
+                        break;
+                    }
+                    self.cursor_x = ((self.cursor_x - 1) / 8) * 8;
+                }
+            }
+            // Insert Characters
+            '@' => {
+                let n = (first as usize).max(1).min(self.cols - self.cursor_x);
+                let row = &mut self.grid[self.cursor_y];
+                for _ in 0..n {
+                    row.insert(self.cursor_x, Cell::default());
+                    row.pop();
+                }
+            }
+            // Cursor position report
+            'n' => {
+                // We don't actually respond to the PTY here, but we handle the
+                // sequence so it doesn't break anything.
+            }
+            // Set Scroll Region
+            'r' => {
+                let top = (first as usize).max(1).saturating_sub(1);
+                let bottom = params_iter
+                    .next()
+                    .and_then(|p| p.first().copied())
+                    .map(|b| (b as usize).max(1).saturating_sub(1))
+                    .unwrap_or(self.rows - 1);
+                self.scroll_top = top.min(self.rows - 1);
+                self.scroll_bottom = bottom.min(self.rows - 1);
+                if self.scroll_top >= self.scroll_bottom {
+                    self.scroll_top = 0;
+                    self.scroll_bottom = self.rows - 1;
+                }
+                self.cursor_x = 0;
+                self.cursor_y = 0;
+            }
+            // Save cursor (ANSI.SYS)
+            's' => self.save_cursor(),
+            // Restore cursor (ANSI.SYS)
+            'u' => self.restore_cursor(),
+            // Cursor style (DECSCUSR)
+            'q' if intermediates.first() == Some(&b' ') => {
+                self.cursor_style = match first {
+                    0 | 1 | 2 => CursorStyle::Block,
+                    3 | 4 => CursorStyle::Underline,
+                    5 | 6 => CursorStyle::Bar,
+                    _ => CursorStyle::Block,
+                };
+            }
             _ => {}
         }
     }
 
-    fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, _byte: u8) {}
+    fn esc_dispatch(&mut self, intermediates: &[u8], _ignore: bool, byte: u8) {
+        match byte {
+            // Reverse Index (scroll down)
+            b'M' => self.reverse_index(),
+            // Save cursor
+            b'7' => self.save_cursor(),
+            // Restore cursor
+            b'8' => self.restore_cursor(),
+            // Reset
+            b'c' => {
+                *self = Terminal::new(self.cols, self.rows);
+            }
+            // Application/Normal keypad — handled at app level
+            b'=' | b'>' => {}
+            // Charset selection — ignore for now
+            _ if intermediates.first() == Some(&b'(') => {}
+            _ if intermediates.first() == Some(&b')') => {}
+            _ => {}
+        }
+    }
 }
 
 #[cfg(test)]
@@ -290,7 +682,7 @@ mod tests {
     #[test]
     fn test_print_and_newline() {
         let mut term = Terminal::new(80, 24);
-        term.feed(b"hello\nworld");
+        term.feed(b"hello\r\nworld");
         assert_eq!(term.grid[0][0].c, 'h');
         assert_eq!(term.grid[0][4].c, 'o');
         assert_eq!(term.grid[1][0].c, 'w');
@@ -306,7 +698,6 @@ mod tests {
     #[test]
     fn test_sgr_foreground_color() {
         let mut term = Terminal::new(80, 24);
-        // ESC[31m = red foreground, then print 'X'
         term.feed(b"\x1b[31mX");
         assert_eq!(term.grid[0][0].c, 'X');
         assert_eq!(term.grid[0][0].fg, Color::Indexed(1));
@@ -323,7 +714,6 @@ mod tests {
     #[test]
     fn test_sgr_256_color() {
         let mut term = Terminal::new(80, 24);
-        // ESC[38;5;208m = 256-color orange foreground
         term.feed(b"\x1b[38;5;208mX");
         assert_eq!(term.grid[0][0].fg, Color::Indexed(208));
     }
@@ -331,8 +721,88 @@ mod tests {
     #[test]
     fn test_sgr_truecolor() {
         let mut term = Terminal::new(80, 24);
-        // ESC[38;2;255;128;0m = RGB foreground
         term.feed(b"\x1b[38;2;255;128;0mX");
         assert_eq!(term.grid[0][0].fg, Color::Rgb(255, 128, 0));
+    }
+
+    #[test]
+    fn test_scrollback() {
+        let mut term = Terminal::new(80, 3);
+        term.feed(b"line1\r\nline2\r\nline3\r\nline4");
+        // line1 should have scrolled into scrollback
+        assert_eq!(term.scrollback.len(), 1);
+        assert_eq!(term.scrollback[0][0].c, 'l');
+        assert_eq!(term.scrollback[0][4].c, '1');
+    }
+
+    #[test]
+    fn test_cursor_hide_show() {
+        let mut term = Terminal::new(80, 24);
+        assert!(term.cursor_visible);
+        term.feed(b"\x1b[?25l");
+        assert!(!term.cursor_visible);
+        term.feed(b"\x1b[?25h");
+        assert!(term.cursor_visible);
+    }
+
+    #[test]
+    fn test_alt_screen() {
+        let mut term = Terminal::new(80, 24);
+        term.feed(b"hello");
+        assert_eq!(term.grid[0][0].c, 'h');
+        term.feed(b"\x1b[?1049h"); // enter alt screen
+        assert!(term.using_alt_screen);
+        assert_eq!(term.grid[0][0].c, ' '); // alt screen is blank
+        term.feed(b"\x1b[?1049l"); // exit alt screen
+        assert!(!term.using_alt_screen);
+        assert_eq!(term.grid[0][0].c, 'h'); // original content restored
+    }
+
+    #[test]
+    fn test_scroll_region() {
+        let mut term = Terminal::new(80, 5);
+        // Set scroll region to rows 2-4 (1-indexed: 2;4)
+        term.feed(b"\x1b[2;4r");
+        assert_eq!(term.scroll_top, 1);
+        assert_eq!(term.scroll_bottom, 3);
+    }
+
+    #[test]
+    fn test_insert_delete_lines() {
+        let mut term = Terminal::new(80, 5);
+        term.feed(b"AAAA\r\nBBBB\r\nCCCC\r\nDDDD\r\nEEEE");
+        // Move to row 2 (0-indexed: 1) and insert a line
+        term.feed(b"\x1b[2;1H\x1b[1L");
+        assert_eq!(term.grid[1][0].c, ' '); // inserted blank line
+        assert_eq!(term.grid[2][0].c, 'B'); // B moved down
+    }
+
+    #[test]
+    fn test_erase_characters() {
+        let mut term = Terminal::new(80, 24);
+        term.feed(b"hello");
+        term.feed(b"\x1b[1;1H\x1b[3X"); // erase 3 chars from position 0
+        assert_eq!(term.grid[0][0].c, ' ');
+        assert_eq!(term.grid[0][2].c, ' ');
+        assert_eq!(term.grid[0][3].c, 'l'); // untouched
+    }
+
+    #[test]
+    fn test_save_restore_cursor() {
+        let mut term = Terminal::new(80, 24);
+        term.feed(b"\x1b[5;10H"); // move to row 5, col 10
+        term.feed(b"\x1b7"); // save cursor (ESC 7)
+        term.feed(b"\x1b[1;1H"); // move to top-left
+        term.feed(b"\x1b8"); // restore cursor (ESC 8)
+        assert_eq!(term.cursor_y, 4);
+        assert_eq!(term.cursor_x, 9);
+    }
+
+    #[test]
+    fn test_get_text() {
+        let mut term = Terminal::new(80, 24);
+        term.feed(b"hello world");
+        let text = term.get_text(0, 0, 5, 0);
+        assert_eq!(text, "hello");
     }
 }
