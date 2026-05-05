@@ -34,6 +34,8 @@ impl PtySession {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
         let mut cmd = CommandBuilder::new(&shell);
         cmd.cwd(std::env::current_dir().unwrap_or_else(|_| "/".into()));
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("COLORTERM", "truecolor");
 
         let child = pair.slave.spawn_command(cmd)?;
         drop(pair.slave);
