@@ -60,18 +60,29 @@ impl App {
             .collect()
     }
 
-    fn rebuild_renderer(&mut self) {
-        let window = match self.window {
-            Some(ref w) => w.clone(),
-            None => return,
-        };
-
-        let renderer = Renderer::new(window, self.scale_factor, self.font_size);
-        let (cols, rows) = renderer.grid_size();
-        self.terminal = Terminal::new(cols as usize, rows as usize);
-        self.renderer = Some(renderer);
-
-        // TODO: resize PTY to match new grid
+    fn zoom(&mut self) {
+        if let Some(ref mut renderer) = self.renderer {
+            renderer.rebuild_atlas(self.font_size, self.scale_factor);
+            let (cols, rows) = renderer.grid_size();
+            // Resize terminal grid, preserving as much content as possible
+            let mut new_grid = vec![vec![termai_core::Cell::default(); cols as usize]; rows as usize];
+            for (y, row) in self.terminal.grid.iter().enumerate() {
+                if y >= rows as usize {
+                    break;
+                }
+                for (x, cell) in row.iter().enumerate() {
+                    if x >= cols as usize {
+                        break;
+                    }
+                    new_grid[y][x] = cell.clone();
+                }
+            }
+            self.terminal.cols = cols as usize;
+            self.terminal.rows = rows as usize;
+            self.terminal.grid = new_grid;
+            self.terminal.cursor_x = self.terminal.cursor_x.min(cols as usize - 1);
+            self.terminal.cursor_y = self.terminal.cursor_y.min(rows as usize - 1);
+        }
     }
 }
 
@@ -153,17 +164,17 @@ impl ApplicationHandler for App {
                     match &event.logical_key {
                         Key::Character(c) if c.as_str() == "=" || c.as_str() == "+" => {
                             self.font_size = (self.font_size + ZOOM_STEP).min(MAX_FONT_SIZE);
-                            self.rebuild_renderer();
+                            self.zoom();
                             return;
                         }
                         Key::Character(c) if c.as_str() == "-" => {
                             self.font_size = (self.font_size - ZOOM_STEP).max(MIN_FONT_SIZE);
-                            self.rebuild_renderer();
+                            self.zoom();
                             return;
                         }
                         Key::Character(c) if c.as_str() == "0" => {
                             self.font_size = 14.0;
-                            self.rebuild_renderer();
+                            self.zoom();
                             return;
                         }
                         _ => {}
