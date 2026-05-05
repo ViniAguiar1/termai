@@ -56,6 +56,7 @@ struct App {
     cursor_blink_start: Instant,
     selection: Option<Selection>,
     mouse_pressed: bool,
+    mouse_just_pressed: bool,
     mouse_pos: (f64, f64),
     clipboard: Option<arboard::Clipboard>,
 }
@@ -73,6 +74,7 @@ impl App {
             cursor_blink_start: Instant::now(),
             selection: None,
             mouse_pressed: false,
+            mouse_just_pressed: false,
             mouse_pos: (0.0, 0.0),
             clipboard: arboard::Clipboard::new().ok(),
         }
@@ -415,11 +417,12 @@ impl ApplicationHandler for App {
                 if button == MouseButton::Left {
                     match state {
                         ElementState::Pressed => {
-                            // Check tab bar click first
+                            // Try tab bar click with current mouse pos
                             if self.handle_tab_bar_click(self.mouse_pos.0, self.mouse_pos.1) {
                                 return;
                             }
                             self.mouse_pressed = true;
+                            self.mouse_just_pressed = true;
                             self.selection = None;
                         }
                         ElementState::Released => {
@@ -431,6 +434,15 @@ impl ApplicationHandler for App {
 
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse_pos = (position.x, position.y);
+
+                // Handle click on tab bar (on first move after press)
+                if self.mouse_just_pressed {
+                    self.mouse_just_pressed = false;
+                    if self.handle_tab_bar_click(position.x, position.y) {
+                        self.mouse_pressed = false;
+                        return;
+                    }
+                }
                 // Click to focus pane
                 if self.mouse_pressed {
                     if let Some(rect) = self.find_pane_at(position.x, position.y) {
