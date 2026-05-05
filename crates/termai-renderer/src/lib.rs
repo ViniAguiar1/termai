@@ -10,7 +10,7 @@ const FONT_BYTES: &[u8] = include_bytes!("../assets/JetBrainsMono-Regular.ttf");
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct Vertex {
+pub struct Vertex {
     position: [f32; 2],
     uv: [f32; 2],
     fg_color: [f32; 4],
@@ -27,6 +27,7 @@ struct Uniforms {
 }
 
 /// A terminal cell to render.
+#[derive(Clone)]
 pub struct RenderCell {
     pub ch: char,
     pub fg: [f32; 4],
@@ -380,24 +381,30 @@ impl Renderer {
         (cols.max(1), rows.max(1))
     }
 
-    /// Render a grid of cells to the screen.
-    pub fn render(&self, cells: &[Vec<RenderCell>]) -> Result<(), wgpu::SurfaceError> {
-        let output = self.surface.get_current_texture()?;
-        let view = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+    /// Grid dimensions that fit a given pixel area.
+    pub fn grid_size_for(&self, width: f32, height: f32) -> (u32, u32) {
+        let cols = (width / self.atlas.cell_width).floor() as u32;
+        let rows = (height / self.atlas.cell_height).floor() as u32;
+        (cols.max(1), rows.max(1))
+    }
 
-        let mut vertices: Vec<Vertex> = Vec::new();
+    /// A pane region to render in a single frame.
+    pub fn build_vertices(
+        &self,
+        cells: &[Vec<RenderCell>],
+        offset_x: f32,
+        offset_y: f32,
+        vertices: &mut Vec<Vertex>,
+    ) {
         let (cell_w, cell_h) = self.cell_size();
 
         for (row_idx, row) in cells.iter().enumerate() {
             for (col_idx, cell) in row.iter().enumerate() {
-                let x = col_idx as f32 * cell_w;
-                let y = row_idx as f32 * cell_h;
+                let x = offset_x + col_idx as f32 * cell_w;
+                let y = offset_y + row_idx as f32 * cell_h;
 
-                // Background quad
                 push_quad(
-                    &mut vertices,
+                    vertices,
                     x,
                     y,
                     x + cell_w,
@@ -409,20 +416,52 @@ impl Renderer {
                     1.0,
                 );
 
-                // Glyph quad
                 if cell.ch != ' ' {
                     if let Some(glyph) = self.atlas.get(cell.ch) {
-                        self.push_glyph_quad(&mut vertices, x, y, glyph, cell.fg, cell.bg);
+                        self.push_glyph_quad(vertices, x, y, glyph, cell.fg, cell.bg);
                     }
                 }
             }
         }
+    }
+
+    /// Add a divider line (for splits).
+    pub fn build_divider(
+        &self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        vertices: &mut Vec<Vertex>,
+    ) {
+        let color = [0.3, 0.3, 0.35, 1.0];
+        push_quad(
+            vertices,
+            x, y, x + w, y + h,
+            [0.0, 0.0], [0.0, 0.0],
+            color, color, 1.0,
+        );
+    }
+
+    /// Render a grid of cells to the screen (single pane, backwards compatible).
+    pub fn render(&self, cells: &[Vec<RenderCell>]) -> Result<(), wgpu::SurfaceError> {
+        let mut vertices: Vec<Vertex> = Vec::new();
+        self.build_vertices(cells, 0.0, 0.0, &mut vertices);
+        self.submit_frame(&vertices)
+    }
+
+    /// Render pre-built vertices to the screen.
+    pub fn submit_frame(&self, vertices: &[Vertex]) -> Result<(), wgpu::SurfaceError> {
+        let output = self.surface.get_current_texture()?;
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
 
         let vertex_buffer = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("vertex-buffer"),
-                contents: bytemuck::cast_slice(&vertices),
+                contents: bytemuck::cast_slice(vertices),
                 usage: wgpu::BufferUsages::VERTEX,
             });
 
