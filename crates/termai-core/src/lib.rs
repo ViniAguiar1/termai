@@ -82,6 +82,11 @@ impl Perform for Terminal {
         match byte {
             b'\n' | 0x0B | 0x0C => self.newline(),
             b'\r' => self.cursor_x = 0,
+            b'\t' => {
+                // Tab stops every 8 columns
+                let next_tab = (self.cursor_x / 8 + 1) * 8;
+                self.cursor_x = next_tab.min(self.cols - 1);
+            }
             b'\x08' => {
                 if self.cursor_x > 0 {
                     self.cursor_x -= 1;
