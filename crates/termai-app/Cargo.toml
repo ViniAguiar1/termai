@@ -12,6 +12,7 @@ path = "src/main.rs"
 termai-core = { path = "../termai-core" }
 termai-renderer = { path = "../termai-renderer" }
 termai-pty = { path = "../termai-pty" }
+wgpu = "24"
 winit = "0.30"
 pollster = "0.4"
 log = "0.4"
