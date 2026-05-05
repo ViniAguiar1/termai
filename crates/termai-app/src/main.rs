@@ -578,6 +578,9 @@ impl ApplicationHandler for App {
                 let focused_id = tab.focused_pane_id;
 
                 for rect in &rects {
+                    // Fill pane background
+                    renderer.build_rect(rect.x, rect.y, rect.w, rect.h, colors::BG, &mut vertices);
+
                     if let Some(pane) = find_pane_ref(&tab.root, rect.id) {
                         let is_focused = rect.id == focused_id;
                         let cells = self.build_pane_cells(pane, is_focused);

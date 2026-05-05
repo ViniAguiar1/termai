@@ -443,6 +443,24 @@ impl Renderer {
         );
     }
 
+    /// Fill a rectangle with a solid color.
+    pub fn build_rect(
+        &self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        color: [f32; 4],
+        vertices: &mut Vec<Vertex>,
+    ) {
+        push_quad(
+            vertices,
+            x, y, x + w, y + h,
+            [0.0, 0.0], [0.0, 0.0],
+            color, color, 1.0,
+        );
+    }
+
     /// Render a grid of cells to the screen (single pane, backwards compatible).
     pub fn render(&self, cells: &[Vec<RenderCell>]) -> Result<(), wgpu::SurfaceError> {
         let mut vertices: Vec<Vertex> = Vec::new();

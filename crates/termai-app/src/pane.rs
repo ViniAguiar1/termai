@@ -151,8 +151,8 @@ impl PaneNode {
                     }
                 };
 
-                // Resize existing pane's terminal
-                pane.terminal = Terminal::new(c1, r1);
+                // Resize existing pane's terminal preserving content
+                resize_terminal(&mut pane.terminal, c1, r1);
 
                 // Take ownership of the current leaf
                 let old = std::mem::replace(self, PaneNode::new_leaf(1, 1)); // placeholder
@@ -253,4 +253,25 @@ pub struct PaneRect {
     pub y: f32,
     pub w: f32,
     pub h: f32,
+}
+
+/// Resize a terminal grid, preserving as much content as possible.
+fn resize_terminal(term: &mut Terminal, new_cols: usize, new_rows: usize) {
+    let mut new_grid = vec![vec![termai_core::Cell::default(); new_cols]; new_rows];
+    for (y, row) in term.grid.iter().enumerate() {
+        if y >= new_rows {
+            break;
+        }
+        for (x, cell) in row.iter().enumerate() {
+            if x >= new_cols {
+                break;
+            }
+            new_grid[y][x] = cell.clone();
+        }
+    }
+    term.cols = new_cols;
+    term.rows = new_rows;
+    term.grid = new_grid;
+    term.cursor_x = term.cursor_x.min(new_cols.saturating_sub(1));
+    term.cursor_y = term.cursor_y.min(new_rows.saturating_sub(1));
 }
