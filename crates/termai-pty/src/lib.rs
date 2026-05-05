@@ -1,4 +1,4 @@
-use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
 
 /// Reader half of the PTY, intended to be moved to a background thread.
@@ -16,6 +16,7 @@ impl Read for PtyReader {
 pub struct PtySession {
     writer: Box<dyn Write + Send>,
     reader: Option<PtyReader>,
+    master: Box<dyn MasterPty + Send>,
     _child: Box<dyn portable_pty::Child + Send + Sync>,
 }
 
@@ -46,6 +47,7 @@ impl PtySession {
         Ok(Self {
             writer,
             reader: Some(PtyReader { inner: reader }),
+            master: pair.master,
             _child: child,
         })
     }
@@ -59,5 +61,16 @@ impl PtySession {
     pub fn write(&mut self, data: &[u8]) -> std::io::Result<()> {
         self.writer.write_all(data)?;
         self.writer.flush()
+    }
+
+    /// Resize the PTY to the given dimensions.
+    pub fn resize(&self, cols: u16, rows: u16) -> anyhow::Result<()> {
+        self.master.resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })?;
+        Ok(())
     }
 }

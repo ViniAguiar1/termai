@@ -288,11 +288,22 @@ impl App {
         false
     }
 
+    /// Resize all panes in the active tab to match the current layout.
+    fn resize_panes(&mut self) {
+        if let Some(ref renderer) = self.renderer {
+            let (cx, cy, cw, ch) = self.content_area();
+            let (cell_w, cell_h) = renderer.cell_size();
+            let tab = self.tab_bar.active_tab();
+            let rects = tab.root.layout(cx, cy, cw, ch);
+            tab.root.resize_all(&rects, cell_w, cell_h);
+        }
+    }
+
     fn zoom(&mut self) {
         if let Some(ref mut renderer) = self.renderer {
             renderer.rebuild_atlas(self.font_size, self.scale_factor);
         }
-        // Panes will be re-created with correct sizes on next layout
+        self.resize_panes();
     }
 
     fn copy_selection(&mut self) {
@@ -380,8 +391,8 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(size) => {
                 if let Some(ref mut renderer) = self.renderer {
                     renderer.resize(size.width, size.height);
-                    // Pane terminals will be resized on next render via layout
                 }
+                self.resize_panes();
             }
 
             WindowEvent::ModifiersChanged(modifiers) => {
@@ -502,6 +513,7 @@ impl ApplicationHandler for App {
                                     rows as usize,
                                 );
                             }
+                            self.resize_panes();
                             return;
                         }
                         // Split horizontal: Cmd+Shift+D
@@ -515,6 +527,7 @@ impl ApplicationHandler for App {
                                     rows as usize,
                                 );
                             }
+                            self.resize_panes();
                             return;
                         }
                         // New tab: Cmd+T

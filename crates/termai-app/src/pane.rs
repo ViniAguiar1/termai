@@ -59,6 +59,15 @@ impl Pane {
     pub fn write(&mut self, data: &[u8]) {
         let _ = self.pty.write(data);
     }
+
+    /// Resize both the terminal grid and PTY to new dimensions.
+    pub fn resize(&mut self, cols: usize, rows: usize) {
+        if cols == self.terminal.cols && rows == self.terminal.rows {
+            return;
+        }
+        resize_terminal(&mut self.terminal, cols, rows);
+        let _ = self.pty.resize(cols as u16, rows as u16);
+    }
 }
 
 /// Split direction.
@@ -151,8 +160,9 @@ impl PaneNode {
                     }
                 };
 
-                // Resize existing pane's terminal preserving content
+                // Resize existing pane's terminal and PTY preserving content
                 resize_terminal(&mut pane.terminal, c1, r1);
+                let _ = pane.pty.resize(c1 as u16, r1 as u16);
 
                 // Take ownership of the current leaf
                 let old = std::mem::replace(self, PaneNode::new_leaf(1, 1)); // placeholder
@@ -199,6 +209,17 @@ impl PaneNode {
                 }
                 // Recurse
                 first.remove(target_id) || second.remove(target_id)
+            }
+        }
+    }
+
+    /// Resize all panes based on their layout rects and cell size.
+    pub fn resize_all(&mut self, rects: &[PaneRect], cell_w: f32, cell_h: f32) {
+        for rect in rects {
+            if let Some(pane) = self.find_pane(rect.id) {
+                let cols = (rect.w / cell_w).floor().max(1.0) as usize;
+                let rows = (rect.h / cell_h).floor().max(1.0) as usize;
+                pane.resize(cols, rows);
             }
         }
     }
