@@ -62,7 +62,29 @@ type Client struct {
 	httpClient *http.Client
 }
 
-// New creates a new LLM client. Tries ANTHROPIC_API_KEY first, then OPENAI_API_KEY.
+// NewWithKey creates a client with an explicit provider and key.
+func NewWithKey(provider, apiKey string) *Client {
+	if apiKey == "" {
+		return nil
+	}
+
+	var p Provider
+	switch provider {
+	case "anthropic":
+		p = ProviderAnthropic
+	default:
+		p = ProviderOpenAI
+	}
+
+	return &Client{
+		provider:   p,
+		apiKey:     apiKey,
+		httpClient: &http.Client{Timeout: timeout},
+	}
+}
+
+// New creates a new LLM client from environment variables.
+// Tries ANTHROPIC_API_KEY first, then OPENAI_API_KEY.
 // Returns nil if no API key is configured.
 func New() *Client {
 	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {

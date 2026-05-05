@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/ViniAguiar1/termai/ai/internal/analyzer"
+	"github.com/ViniAguiar1/termai/ai/internal/config"
 	"github.com/ViniAguiar1/termai/ai/internal/llm"
 	"github.com/spf13/cobra"
 )
@@ -63,12 +64,20 @@ func init() {
 }
 
 func runServer(socketPath string) error {
-	// Initialize LLM client
-	llmClient = llm.New()
+	// Load config and initialize LLM client
+	cfg := config.Load()
+	provider := cfg.Provider()
+	if provider != "" {
+		apiKey := cfg.APIKey(provider)
+		llmClient = llm.NewWithKey(provider, apiKey)
+	}
+	if llmClient == nil {
+		llmClient = llm.New() // fall back to env vars
+	}
 	if llmClient != nil {
 		fmt.Fprintf(os.Stderr, "LLM enabled (provider: %s)\n", llmClient.ProviderName())
 	} else {
-		fmt.Fprintln(os.Stderr, "LLM disabled (set ANTHROPIC_API_KEY or OPENAI_API_KEY to enable)")
+		fmt.Fprintln(os.Stderr, "LLM disabled (set api_key in ~/.config/termai/config.toml or ANTHROPIC_API_KEY/OPENAI_API_KEY env var)")
 	}
 
 	// Clean up stale socket
