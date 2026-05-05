@@ -1,91 +1,132 @@
 # termAI
 
-AI-powered terminal assistant built in Go.
+GPU-accelerated terminal emulator with built-in AI assistance.
 
-## 🚀 Status
+## Status
 
-Early development, with a working CLI foundation.
+Early development. The terminal emulator is functional on macOS with GPU rendering, split panes, tabs, and ANSI color support. AI integration is next.
 
-## 🧠 Goal
+## Goal
 
-Build a developer-focused terminal that can:
+Build a fast, cross-platform terminal emulator that can:
 
-- Execute commands
-- Analyze terminal output
-- Detect errors
-- Suggest actions
-- Evolve into an AI-powered assistant
+- Render text on the GPU for smooth, high-performance output
+- Split panes and tabs like tmux, but built-in
+- Analyze terminal output and detect errors
+- Suggest corrective actions powered by AI
+- Run on macOS, Linux, and Windows
 
-## 🛠 Tech Stack
+## Tech Stack
 
-- Go
-- Cobra CLI
-- golangci-lint
+- **Rust** — Terminal emulator (wgpu, winit, vte, portable-pty)
+- **Go** — AI engine (Cobra CLI, error analysis, future LLM integration)
 
-## ✅ Current Features
+## Features
 
-- Interactive CLI loop
-- Command execution with stdout, stderr and exit code capture
-- Local error analysis for common terminal failures
-- Contextual guidance for `nvm: command not found`
-- Suggested actions with risk levels
-- Confirmation before running sensitive actions
-- Placeholder detection for commands that need manual editing
-- Unit tests for analyzer, executor and CLI safety helpers
-- Linting configuration
-- GitHub Actions CI for tests, vet, race detection and linting
+- GPU-accelerated text rendering via wgpu (Metal on macOS, Vulkan on Linux, DX12 on Windows)
+- JetBrains Mono embedded font with HiDPI/Retina support
+- ANSI color support (16 colors, 256-color, truecolor RGB)
+- Split panes (vertical/horizontal) with independent PTYs
+- Tabs with tab bar and click-to-switch
+- Blinking cursor with style support (block, underline, bar)
+- Scrollback buffer (10k lines) with mouse wheel and keyboard scrolling
+- Text selection with mouse + Cmd+C/Cmd+V clipboard
+- Zoom in/out with Cmd+/Cmd-
+- Alternate screen buffer (vim, htop, tmux)
+- VT100/xterm escape sequence support (cursor movement, scroll regions, insert/delete lines)
+- Config file (`~/.config/termai/config.toml`)
 
-## 📦 Setup
-
-```bash
-go run main.go
-```
-
-Build with an injected version:
+## Quick Start
 
 ```bash
-go build -ldflags "-X github.com/ViniAguiar1/termai/cmd.appVersion=v0.1.0" -o termai
+cargo run --release
 ```
 
-By default, local builds fall back to Go build metadata and show versions like `dev-<commit>` automatically.
-
-## 🧪 Tests
+## Build
 
 ```bash
-go test ./...
-go vet ./...
-golangci-lint run
+# Debug
+cargo build
+
+# Release
+cargo build --release
+
+# Run
+./target/release/termai
 ```
 
-For race detection:
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| Cmd+D | Split vertical |
+| Cmd+Shift+D | Split horizontal |
+| Cmd+[ / Cmd+] | Navigate panes |
+| Cmd+T | New tab |
+| Cmd+W | Close pane/tab |
+| Cmd+1-9 | Switch tabs |
+| Cmd++ / Cmd+- | Zoom in/out |
+| Cmd+0 | Reset zoom |
+| Cmd+C | Copy selection |
+| Cmd+V | Paste |
+| Shift+PageUp/Down | Scroll history |
+
+## Config
+
+Create `~/.config/termai/config.toml`:
+
+```toml
+[font]
+size = 14.0
+
+[window]
+width = 1024
+height = 640
+title = "termAI"
+
+[terminal]
+scrollback_lines = 10000
+
+[theme]
+background = "#121216"
+foreground = "#ccccce"
+```
+
+## Tests
 
 ```bash
-go test -race ./...
+# Rust
+cargo test
+
+# Go (AI engine)
+cd ai && go test ./...
+cd ai && go test -race ./...
+cd ai && go vet ./...
+cd ai && golangci-lint run
 ```
 
-## 🧪 Manual Testing
+## Architecture
 
-Run termAI:
-
-```bash
-go run main.go
+```
+termai/
+├── crates/                     # Rust workspace
+│   ├── termai-app/             # Main binary: window, event loop, tabs, panes
+│   ├── termai-core/            # VT100 state machine, terminal grid
+│   ├── termai-renderer/        # wgpu GPU rendering, glyph atlas
+│   └── termai-pty/             # Cross-platform PTY (Unix + Windows ConPTY)
+├── ai/                         # Go AI engine
+│   ├── cmd/                    # CLI, session, prompt
+│   └── internal/               # Analyzer, executor
+└── proto/                      # IPC protocol (planned)
 ```
 
-Try a known command-not-found case:
+## License
 
-```bash
-nvm use 24
-```
+MIT License. See [LICENSE](LICENSE).
 
-termAI should detect that `nvm` is not loaded in the current executor and suggest loading `~/.nvm/nvm.sh` before running `nvm use 24`.
+## Next Steps
 
-## 📄 License
-
-This project is licensed under the MIT License. See [LICENSE](/Users/viniciusaguiar/termai/LICENSE:1).
-
-## 📌 Next Steps
-
-- Replace raw stdin scanning with a readline-style input layer for history and arrow-key support
-- Add OpenAI-powered analysis for unknown or complex errors
-- Expand analyzer rules and safety metadata
-- Improve command suggestions that require user-provided values
+- IPC between Rust emulator and Go AI engine
+- AI-powered error analysis with LLM integration
+- Cross-platform testing (Linux, Windows)
+- Multi-language support (i18n)
