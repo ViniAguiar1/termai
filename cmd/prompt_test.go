@@ -27,3 +27,31 @@ func TestParseGitStatusOutput(t *testing.T) {
 		t.Fatalf("Ahead = %d, want 1", status.Ahead)
 	}
 }
+
+func TestResolveVersionUsesInjectedRelease(t *testing.T) {
+	got := resolveVersion("v0.1.0", "(devel)", "abcdef123456", true)
+	if got != "v0.1.0" {
+		t.Fatalf("resolveVersion() = %q, want %q", got, "v0.1.0")
+	}
+}
+
+func TestResolveVersionUsesBuildInfoVersion(t *testing.T) {
+	got := resolveVersion("dev", "v0.2.0", "abcdef123456", false)
+	if got != "v0.2.0" {
+		t.Fatalf("resolveVersion() = %q, want %q", got, "v0.2.0")
+	}
+}
+
+func TestResolveVersionUsesRevisionForDevelBuild(t *testing.T) {
+	got := resolveVersion("dev", "(devel)", "abcdef123456", true)
+	if got != "dev-abcdef1-dirty" {
+		t.Fatalf("resolveVersion() = %q, want %q", got, "dev-abcdef1-dirty")
+	}
+}
+
+func TestResolveVersionFallback(t *testing.T) {
+	got := resolveVersion("", "", "", false)
+	if got != "dev" {
+		t.Fatalf("resolveVersion() = %q, want %q", got, "dev")
+	}
+}

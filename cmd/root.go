@@ -21,7 +21,7 @@ var (
 var rootCmd = &cobra.Command{
 	Use:     "termai",
 	Short:   "AI-powered terminal assistant",
-	Version: appVersion,
+	Version: versionString(),
 	Run: func(cmd *cobra.Command, args []string) {
 		reader, err := newLineReader()
 		if err != nil {
@@ -38,6 +38,8 @@ var rootCmd = &cobra.Command{
 }
 
 func Execute() {
+	rootCmd.Version = versionString()
+
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
 		os.Exit(1)

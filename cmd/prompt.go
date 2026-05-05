@@ -8,8 +8,6 @@ import (
 	"strings"
 )
 
-const appVersion = "dev"
-
 type promptInfo struct {
 	Git *gitStatus
 }
@@ -27,7 +25,7 @@ func buildPrompt() string {
 	segments := []string{
 		promptColor("⚡"),
 		infoColor("termAI"),
-		warnColor("v" + appVersion),
+		warnColor("v" + versionString()),
 	}
 
 	if info.Git != nil {
