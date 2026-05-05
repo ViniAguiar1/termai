@@ -1,10 +1,11 @@
+mod ai;
 mod colors;
 mod config;
 mod pane;
 mod tab;
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use config::Config;
 
@@ -68,6 +69,8 @@ struct App {
     mouse_pos: (f64, f64),
     clipboard: Option<arboard::Clipboard>,
     search: Option<SearchState>,
+    ai_client: Option<ai::AiClient>,
+    ai_overlay: Option<ai::AiSuggestion>,
 }
 
 impl App {
@@ -87,6 +90,8 @@ impl App {
             mouse_pos: (0.0, 0.0),
             clipboard: arboard::Clipboard::new().ok(),
             search: None,
+            ai_client: Some(ai::AiClient::new()),
+            ai_overlay: None,
         }
     }
 
@@ -472,6 +477,71 @@ impl App {
         vec![row]
     }
 
+    fn build_ai_overlay_cells(&self) -> Vec<Vec<RenderCell>> {
+        let suggestion = match self.ai_overlay {
+            Some(ref s) => s,
+            None => return vec![],
+        };
+        let renderer = match self.renderer {
+            Some(ref r) => r,
+            None => return vec![],
+        };
+
+        let (cols, _) = renderer.grid_size();
+        let cols = cols as usize;
+        let bg = [0.12, 0.14, 0.20, 1.0];
+        let title_fg = [1.0, 0.8, 0.2, 1.0]; // Gold
+        let desc_fg = [0.7, 0.7, 0.75, 1.0];
+        let action_fg = [0.4, 0.9, 0.4, 1.0]; // Green
+        let hint_fg = [0.5, 0.5, 0.55, 1.0];
+
+        let mut rows: Vec<Vec<RenderCell>> = Vec::new();
+
+        let make_row = |text: &str, fg: [f32; 4], bg: [f32; 4], cols: usize| -> Vec<RenderCell> {
+            let mut row = vec![RenderCell { ch: ' ', fg, bg }; cols];
+            for (i, ch) in text.chars().enumerate() {
+                if i >= cols {
+                    break;
+                }
+                row[i] = RenderCell { ch, fg, bg };
+            }
+            row
+        };
+
+        // Separator line
+        rows.push(make_row(&"─".repeat(cols.min(80)), hint_fg, bg, cols));
+
+        // Title
+        let title_text = format!(" {} ", suggestion.title);
+        rows.push(make_row(&title_text, title_fg, bg, cols));
+
+        // Description
+        if !suggestion.description.is_empty() {
+            let desc_text = format!(" {}", suggestion.description);
+            rows.push(make_row(&desc_text, desc_fg, bg, cols));
+        }
+
+        // Blank line
+        rows.push(make_row("", desc_fg, bg, cols));
+
+        // Actions
+        for (i, action) in suggestion.actions.iter().enumerate() {
+            let risk_indicator = match action.risk.as_str() {
+                "high" => " [!]",
+                "medium" => " [~]",
+                _ => "",
+            };
+            let action_text = format!(" [{}] {}{}", i + 1, action.label, risk_indicator);
+            rows.push(make_row(&action_text, action_fg, bg, cols));
+        }
+
+        // Hint
+        rows.push(make_row("", desc_fg, bg, cols));
+        rows.push(make_row(" Press 1-9 to execute, Esc to dismiss", hint_fg, bg, cols));
+
+        rows
+    }
+
     fn paste(&mut self) {
         if let Some(ref mut clip) = self.clipboard {
             if let Ok(text) = clip.get_text() {
@@ -625,6 +695,37 @@ impl ApplicationHandler for App {
                 }
 
                 self.cursor_blink_start = Instant::now();
+
+                // AI overlay interaction: number keys to execute, Escape to dismiss
+                if self.ai_overlay.is_some() {
+                    match &event.logical_key {
+                        Key::Named(NamedKey::Escape) => {
+                            self.ai_overlay = None;
+                            return;
+                        }
+                        Key::Character(c) if c.len() == 1 && c.as_bytes()[0] >= b'1' && c.as_bytes()[0] <= b'9' => {
+                            let idx = (c.as_bytes()[0] - b'1') as usize;
+                            let command = self.ai_overlay.as_ref()
+                                .and_then(|s| s.actions.get(idx))
+                                .map(|a| a.command.clone());
+                            if let Some(cmd) = command {
+                                self.ai_overlay = None;
+                                let tab = self.tab_bar.active_tab();
+                                let id = tab.focused_pane_id;
+                                if let Some(pane) = tab.root.find_pane(id) {
+                                    // Write command + Enter to PTY
+                                    pane.write(cmd.as_bytes());
+                                    pane.write(b"\r");
+                                }
+                            }
+                            return;
+                        }
+                        _ => {
+                            // Any other key dismisses the overlay
+                            self.ai_overlay = None;
+                        }
+                    }
+                }
 
                 let is_super = self.modifiers.super_key();
                 let is_shift = self.modifiers.shift_key();
@@ -823,6 +924,25 @@ impl ApplicationHandler for App {
                 // Poll all panes in active tab
                 self.tab_bar.active_tab().poll();
 
+                // Poll AI client for suggestions
+                if let Some(ref ai_client) = self.ai_client {
+                    if let Some(msg) = ai_client.poll() {
+                        match msg {
+                            ai::AiMessage::Suggestion(s) => {
+                                self.ai_overlay = Some(s);
+                            }
+                            ai::AiMessage::NoSuggestion => {}
+                        }
+                    }
+                }
+
+                // Auto-dismiss overlay after 10 seconds
+                if let Some(ref overlay) = self.ai_overlay {
+                    if overlay.created.elapsed() > Duration::from_secs(10) {
+                        self.ai_overlay = None;
+                    }
+                }
+
                 let renderer = match self.renderer {
                     Some(ref r) => r,
                     None => return,
@@ -883,6 +1003,17 @@ impl ApplicationHandler for App {
                 if !search_bar_cells.is_empty() {
                     let search_y = cy + ch; // below content area
                     renderer.build_vertices(&search_bar_cells, 0.0, search_y, &mut vertices);
+                }
+
+                // AI suggestion overlay (at bottom of focused pane)
+                let overlay_cells = self.build_ai_overlay_cells();
+                if !overlay_cells.is_empty() {
+                    if let Some(rect) = rects.iter().find(|r| r.id == focused_id) {
+                        let (_, cell_h) = renderer.cell_size();
+                        let overlay_h = overlay_cells.len() as f32 * cell_h;
+                        let overlay_y = (rect.y + rect.h - overlay_h).max(rect.y);
+                        renderer.build_vertices(&overlay_cells, rect.x, overlay_y, &mut vertices);
+                    }
                 }
 
                 match renderer.submit_frame(&vertices) {
