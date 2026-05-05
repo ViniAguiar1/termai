@@ -1,4 +1,4 @@
-module github.com/ViniAguiar1/termai
+module github.com/ViniAguiar1/termai/ai
 
 go 1.25.5
 

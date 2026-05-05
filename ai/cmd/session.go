@@ -5,8 +5,8 @@ import (
 	"io"
 	"strconv"
 
-	"github.com/ViniAguiar1/termai/internal/analyzer"
-	"github.com/ViniAguiar1/termai/internal/executor"
+	"github.com/ViniAguiar1/termai/ai/internal/analyzer"
+	"github.com/ViniAguiar1/termai/ai/internal/executor"
 )
 
 type session struct {

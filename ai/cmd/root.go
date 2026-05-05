@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/ViniAguiar1/termai/internal/analyzer"
+	"github.com/ViniAguiar1/termai/ai/internal/analyzer"
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"

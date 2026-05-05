@@ -1,6 +1,6 @@
 package main
 
-import "github.com/ViniAguiar1/termai/cmd"
+import "github.com/ViniAguiar1/termai/ai/cmd"
 
 func main() {
 	cmd.Execute()
