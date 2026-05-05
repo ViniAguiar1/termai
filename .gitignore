@@ -17,5 +17,8 @@ termai
 .vscode/
 .idea/
 
+# Site
+site/
+
 # Env
 .env
