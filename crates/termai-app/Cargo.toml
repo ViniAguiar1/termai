@@ -1,0 +1,18 @@
+[package]
+name = "termai-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "termai"
+path = "src/main.rs"
+
+[dependencies]
+termai-core = { path = "../termai-core" }
+termai-renderer = { path = "../termai-renderer" }
+termai-pty = { path = "../termai-pty" }
+winit = "0.30"
+pollster = "0.4"
+log = "0.4"
+env_logger = "0.11"
