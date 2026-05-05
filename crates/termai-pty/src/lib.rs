@@ -1,10 +1,21 @@
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::{Read, Write};
 
+/// Reader half of the PTY, intended to be moved to a background thread.
+pub struct PtyReader {
+    inner: Box<dyn Read + Send>,
+}
+
+impl Read for PtyReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.inner.read(buf)
+    }
+}
+
 /// Managed PTY session wrapping a shell process.
 pub struct PtySession {
-    reader: Box<dyn Read + Send>,
     writer: Box<dyn Write + Send>,
+    reader: Option<PtyReader>,
     _child: Box<dyn portable_pty::Child + Send + Sync>,
 }
 
@@ -31,15 +42,15 @@ impl PtySession {
         let writer = pair.master.take_writer()?;
 
         Ok(Self {
-            reader,
             writer,
+            reader: Some(PtyReader { inner: reader }),
             _child: child,
         })
     }
 
-    /// Read available bytes from PTY output.
-    pub fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.reader.read(buf)
+    /// Take the reader half. Can only be called once.
+    pub fn take_reader(&mut self) -> PtyReader {
+        self.reader.take().expect("Reader already taken")
     }
 
     /// Write input bytes to the PTY (keyboard input).
