@@ -41,6 +41,14 @@ Build a developer-focused terminal that can:
 go run main.go
 ```
 
+Build with an injected version:
+
+```bash
+go build -ldflags "-X github.com/ViniAguiar1/termai/cmd.appVersion=v0.1.0" -o termai
+```
+
+By default, local builds fall back to Go build metadata and show versions like `dev-<commit>` automatically.
+
 ## 🧪 Tests
 
 ```bash
