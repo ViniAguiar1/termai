@@ -45,6 +45,14 @@ impl Selection {
     }
 }
 
+struct SearchState {
+    query: String,
+    /// Matches as (absolute_row, col) from Terminal::search()
+    matches: Vec<(usize, usize)>,
+    /// Index into matches for the current highlighted match
+    current: usize,
+}
+
 struct App {
     config: Config,
     window: Option<Arc<Window>>,
@@ -59,6 +67,7 @@ struct App {
     mouse_just_pressed: bool,
     mouse_pos: (f64, f64),
     clipboard: Option<arboard::Clipboard>,
+    search: Option<SearchState>,
 }
 
 impl App {
@@ -77,6 +86,7 @@ impl App {
             mouse_just_pressed: false,
             mouse_pos: (0.0, 0.0),
             clipboard: arboard::Clipboard::new().ok(),
+            search: None,
         }
     }
 
@@ -92,12 +102,25 @@ impl App {
         }
     }
 
+    fn search_bar_pixel_height(&self) -> f32 {
+        if self.search.is_none() {
+            return 0.0;
+        }
+        if let Some(ref renderer) = self.renderer {
+            let (_, ch) = renderer.cell_size();
+            ch + 4.0
+        } else {
+            0.0
+        }
+    }
+
     fn content_area(&self) -> (f32, f32, f32, f32) {
         if let Some(ref renderer) = self.renderer {
             let w = renderer.width() as f32;
             let h = renderer.height() as f32;
             let tab_h = self.tab_bar_pixel_height();
-            (0.0, tab_h, w, h - tab_h)
+            let search_h = self.search_bar_pixel_height();
+            (0.0, tab_h, w, h - tab_h - search_h)
         } else {
             (0.0, 0.0, 0.0, 0.0)
         }
@@ -144,6 +167,13 @@ impl App {
             None
         };
 
+        // Build set of search-highlighted cells for this pane
+        let search_highlight: Option<&SearchState> = if is_focused {
+            self.search.as_ref().filter(|s| !s.query.is_empty())
+        } else {
+            None
+        };
+
         visible
             .iter()
             .enumerate()
@@ -170,6 +200,27 @@ impl App {
                             };
                             if in_sel {
                                 std::mem::swap(&mut fg, &mut bg);
+                            }
+                        }
+
+                        // Search highlighting
+                        if let Some(ref search) = search_highlight {
+                            let qlen = search.query.len();
+                            for (mi, &(abs_row, abs_col)) in search.matches.iter().enumerate() {
+                                if let Some(vis_row) = pane.terminal.abs_row_to_visible(abs_row) {
+                                    if vis_row == row_idx && col_idx >= abs_col && col_idx < abs_col + qlen {
+                                        if mi == search.current {
+                                            // Current match: bright orange
+                                            fg = [0.0, 0.0, 0.0, 1.0];
+                                            bg = [1.0, 0.6, 0.0, 1.0];
+                                        } else {
+                                            // Other matches: yellow
+                                            fg = [0.0, 0.0, 0.0, 1.0];
+                                            bg = [0.9, 0.9, 0.2, 1.0];
+                                        }
+                                        break;
+                                    }
+                                }
                             }
                         }
 
@@ -325,6 +376,100 @@ impl App {
     fn find_focused_pane_ref(&self) -> Option<&pane::Pane> {
         let tab = &self.tab_bar.tabs[self.tab_bar.active];
         find_pane_ref(&tab.root, tab.focused_pane_id)
+    }
+
+    fn update_search(&mut self) {
+        if let Some(ref mut search) = self.search {
+            let tab = &self.tab_bar.tabs[self.tab_bar.active];
+            if let Some(pane) = find_pane_ref(&tab.root, tab.focused_pane_id) {
+                search.matches = pane.terminal.search(&search.query);
+                if search.matches.is_empty() {
+                    search.current = 0;
+                } else {
+                    search.current = search.current.min(search.matches.len() - 1);
+                }
+            }
+        }
+    }
+
+    fn search_jump_to_current(&mut self) {
+        if let Some(ref search) = self.search {
+            if let Some(&(abs_row, _col)) = search.matches.get(search.current) {
+                let tab = self.tab_bar.active_tab();
+                if let Some(pane) = tab.root.find_pane(tab.focused_pane_id) {
+                    let sb_len = pane.terminal.scrollback.len();
+                    if abs_row < sb_len {
+                        // In scrollback: set offset so this row is visible
+                        pane.terminal.scroll_offset = sb_len - abs_row;
+                    } else {
+                        // In grid: snap to bottom
+                        pane.terminal.scroll_offset = 0;
+                    }
+                }
+            }
+        }
+    }
+
+    fn search_next(&mut self) {
+        if let Some(ref mut search) = self.search {
+            if !search.matches.is_empty() {
+                search.current = (search.current + 1) % search.matches.len();
+            }
+        }
+        self.search_jump_to_current();
+    }
+
+    fn search_prev(&mut self) {
+        if let Some(ref mut search) = self.search {
+            if !search.matches.is_empty() {
+                search.current = if search.current == 0 {
+                    search.matches.len() - 1
+                } else {
+                    search.current - 1
+                };
+            }
+        }
+        self.search_jump_to_current();
+    }
+
+    fn build_search_bar_cells(&self) -> Vec<Vec<RenderCell>> {
+        let search = match self.search {
+            Some(ref s) => s,
+            None => return vec![],
+        };
+        let renderer = match self.renderer {
+            Some(ref r) => r,
+            None => return vec![],
+        };
+
+        let (cols, _) = renderer.grid_size();
+        let bg = [0.18, 0.18, 0.22, 1.0];
+        let fg = [0.9, 0.9, 0.9, 1.0];
+        let mut row = vec![RenderCell { ch: ' ', fg, bg }; cols as usize];
+
+        // "Find: <query>  N/M"
+        let count_str = if search.matches.is_empty() {
+            if search.query.is_empty() { String::new() } else { "0/0".to_string() }
+        } else {
+            format!("{}/{}", search.current + 1, search.matches.len())
+        };
+
+        let label = format!(" Find: {}  {}", search.query, count_str);
+
+        for (i, ch) in label.chars().enumerate() {
+            if i >= cols as usize {
+                break;
+            }
+            row[i].ch = ch;
+        }
+
+        // Cursor position (blinking underscore after query)
+        let cursor_pos = 7 + search.query.len(); // " Find: " is 7 chars
+        if cursor_pos < cols as usize {
+            row[cursor_pos].bg = [0.5, 0.5, 0.6, 1.0];
+        }
+
+        vec![row]
     }
 
     fn paste(&mut self) {
@@ -560,6 +705,27 @@ impl ApplicationHandler for App {
                             self.tab_bar.active_tab().focus_prev();
                             return;
                         }
+                        // Search: Cmd+F
+                        Key::Character(c) if c.as_str() == "f" => {
+                            if self.search.is_none() {
+                                self.search = Some(SearchState {
+                                    query: String::new(),
+                                    matches: Vec::new(),
+                                    current: 0,
+                                });
+                            }
+                            return;
+                        }
+                        // Next match: Cmd+G
+                        Key::Character(c) if c.as_str() == "g" && !is_shift => {
+                            self.search_next();
+                            return;
+                        }
+                        // Prev match: Cmd+Shift+G
+                        Key::Character(c) if (c.as_str() == "g" || c.as_str() == "G") && is_shift => {
+                            self.search_prev();
+                            return;
+                        }
                         // Copy: Cmd+C
                         Key::Character(c) if c.as_str() == "c" => {
                             self.copy_selection();
@@ -605,6 +771,39 @@ impl ApplicationHandler for App {
                         }
                         _ => {}
                     }
+                }
+
+                // Search mode: route keyboard to search query
+                if self.search.is_some() {
+                    match &event.logical_key {
+                        Key::Named(NamedKey::Escape) => {
+                            self.search = None;
+                        }
+                        Key::Named(NamedKey::Enter) => {
+                            if is_shift {
+                                self.search_prev();
+                            } else {
+                                self.search_next();
+                            }
+                        }
+                        Key::Named(NamedKey::Backspace) => {
+                            if let Some(ref mut search) = self.search {
+                                search.query.pop();
+                            }
+                            self.update_search();
+                        }
+                        Key::Character(_) => {
+                            if let Some(text) = &event.text {
+                                if let Some(ref mut search) = self.search {
+                                    search.query.push_str(text.as_str());
+                                }
+                                self.update_search();
+                                self.search_jump_to_current();
+                            }
+                        }
+                        _ => {}
+                    }
+                    return;
                 }
 
                 self.selection = None;
@@ -677,6 +876,13 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
+                }
+
+                // Search bar
+                let search_bar_cells = self.build_search_bar_cells();
+                if !search_bar_cells.is_empty() {
+                    let search_y = cy + ch; // below content area
+                    renderer.build_vertices(&search_bar_cells, 0.0, search_y, &mut vertices);
                 }
 
                 match renderer.submit_frame(&vertices) {

@@ -205,6 +205,59 @@ impl Terminal {
         trimmed.to_string()
     }
 
+    /// Search for a query string in scrollback + grid.
+    /// Returns matches as (absolute_row, col) where absolute_row 0 is the first scrollback line.
+    pub fn search(&self, query: &str) -> Vec<(usize, usize)> {
+        if query.is_empty() {
+            return vec![];
+        }
+        let query_lower = query.to_lowercase();
+        let mut matches = Vec::new();
+
+        // Search scrollback
+        for (row_idx, row) in self.scrollback.iter().enumerate() {
+            let line: String = row.iter().map(|c| c.c).collect();
+            let line_lower = line.to_lowercase();
+            let mut start = 0;
+            while let Some(pos) = line_lower[start..].find(&query_lower) {
+                matches.push((row_idx, start + pos));
+                start += pos + 1;
+            }
+        }
+
+        // Search grid
+        let sb_len = self.scrollback.len();
+        for (row_idx, row) in self.grid.iter().enumerate() {
+            let line: String = row.iter().map(|c| c.c).collect();
+            let line_lower = line.to_lowercase();
+            let mut start = 0;
+            while let Some(pos) = line_lower[start..].find(&query_lower) {
+                matches.push((sb_len + row_idx, start + pos));
+                start += pos + 1;
+            }
+        }
+
+        matches
+    }
+
+    /// Convert an absolute row index (scrollback + grid) to a visible row index,
+    /// given the current scroll_offset. Returns None if not visible.
+    pub fn abs_row_to_visible(&self, abs_row: usize) -> Option<usize> {
+        let sb_len = self.scrollback.len();
+        let viewport_start_abs = if self.scroll_offset == 0 {
+            sb_len
+        } else {
+            sb_len.saturating_sub(self.scroll_offset)
+        };
+        let viewport_end_abs = viewport_start_abs + self.rows;
+
+        if abs_row >= viewport_start_abs && abs_row < viewport_end_abs {
+            Some(abs_row - viewport_start_abs)
+        } else {
+            None
+        }
+    }
+
     fn scroll_up_region(&mut self) {
         let removed = self.grid.remove(self.scroll_top);
 
@@ -804,5 +857,41 @@ mod tests {
         term.feed(b"hello world");
         let text = term.get_text(0, 0, 5, 0);
         assert_eq!(text, "hello");
+    }
+
+    #[test]
+    fn test_search() {
+        let mut term = Terminal::new(80, 24);
+        term.feed(b"hello world\r\nhello rust\r\ngoodbye");
+        let matches = term.search("hello");
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0], (0, 0)); // row 0, col 0 (grid row since no scrollback)
+        assert_eq!(matches[1], (1, 0)); // row 1, col 0
+    }
+
+    #[test]
+    fn test_search_case_insensitive() {
+        let mut term = Terminal::new(80, 24);
+        term.feed(b"Hello HELLO hello");
+        let matches = term.search("hello");
+        assert_eq!(matches.len(), 3);
+    }
+
+    #[test]
+    fn test_search_empty() {
+        let term = Terminal::new(80, 24);
+        let matches = term.search("");
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn test_search_in_scrollback() {
+        let mut term = Terminal::new(80, 3);
+        term.feed(b"findme\r\nline2\r\nline3\r\nline4");
+        // "findme" should be in scrollback
+        assert!(!term.scrollback.is_empty());
+        let matches = term.search("findme");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].0, 0); // first scrollback line
     }
 }
