@@ -34,6 +34,8 @@ pub struct TerminalConfig {
 #[derive(Deserialize, Debug)]
 #[serde(default)]
 pub struct ThemeConfig {
+    /// Built-in theme name (e.g. "dracula", "catppuccin-mocha", "nord").
+    pub name: String,
     pub background: String,
     pub foreground: String,
 }
@@ -77,8 +79,9 @@ impl Default for TerminalConfig {
 impl Default for ThemeConfig {
     fn default() -> Self {
         Self {
-            background: "#121216".to_string(),
-            foreground: "#ccccce".to_string(),
+            name: "default".to_string(),
+            background: String::new(),
+            foreground: String::new(),
         }
     }
 }
@@ -105,6 +108,35 @@ fn config_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join("termai")
         .join("config.toml")
+}
+
+impl ThemeConfig {
+    /// Resolve this config into a concrete Theme.
+    /// Starts from the named built-in theme, then applies any explicit
+    /// background/foreground overrides.
+    pub fn resolve(&self) -> crate::colors::Theme {
+        let mut theme = crate::colors::theme_by_name(&self.name)
+            .cloned()
+            .unwrap_or_else(|| {
+                if self.name != "default" {
+                    log::warn!("Unknown theme '{}', falling back to default", self.name);
+                }
+                crate::colors::DEFAULT.clone()
+            });
+
+        if !self.background.is_empty() {
+            if let Some(c) = parse_hex_color(&self.background) {
+                theme.bg = c;
+            }
+        }
+        if !self.foreground.is_empty() {
+            if let Some(c) = parse_hex_color(&self.foreground) {
+                theme.fg = c;
+            }
+        }
+
+        theme
+    }
 }
 
 /// Parse a hex color string (#RRGGBB) to [f32; 4].

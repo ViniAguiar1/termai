@@ -47,6 +47,8 @@ pub struct Renderer {
     atlas: GlyphAtlas,
     width: u32,
     height: u32,
+    /// Background clear color (set from theme).
+    pub clear_color: [f32; 4],
 }
 
 impl Renderer {
@@ -285,6 +287,7 @@ impl Renderer {
             atlas,
             width,
             height,
+            clear_color: [0.07, 0.07, 0.09, 1.0],
         }
     }
 
@@ -432,9 +435,9 @@ impl Renderer {
         y: f32,
         w: f32,
         h: f32,
+        color: [f32; 4],
         vertices: &mut Vec<Vertex>,
     ) {
-        let color = [0.3, 0.3, 0.35, 1.0];
         push_quad(
             vertices,
             x, y, x + w, y + h,
@@ -497,10 +500,10 @@ impl Renderer {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.07,
-                            g: 0.07,
-                            b: 0.09,
-                            a: 1.0,
+                            r: self.clear_color[0] as f64,
+                            g: self.clear_color[1] as f64,
+                            b: self.clear_color[2] as f64,
+                            a: self.clear_color[3] as f64,
                         }),
                         store: wgpu::StoreOp::Store,
                     },

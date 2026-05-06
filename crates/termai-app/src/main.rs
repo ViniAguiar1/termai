@@ -86,6 +86,7 @@ const ERROR_PATTERNS: &[&str] = &[
 
 struct App {
     config: Config,
+    theme: colors::Theme,
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     tab_bar: TabBar,
@@ -109,6 +110,7 @@ impl App {
     fn new() -> Self {
         Self {
             config: Config::default(),
+            theme: colors::DEFAULT.clone(),
             window: None,
             renderer: None,
             tab_bar: TabBar::new(80, 24),
@@ -219,8 +221,8 @@ impl App {
                 row.iter()
                     .enumerate()
                     .map(|(col_idx, cell)| {
-                        let mut fg = colors::resolve_fg(cell.fg, cell.bold);
-                        let mut bg = colors::resolve_bg(cell.bg);
+                        let mut fg = colors::resolve_fg(&self.theme, cell.fg, cell.bold);
+                        let mut bg = colors::resolve_bg(&self.theme, cell.bg);
 
                         if cell.inverse {
                             std::mem::swap(&mut fg, &mut bg);
@@ -268,11 +270,11 @@ impl App {
                         {
                             match pane.terminal.cursor_style {
                                 CursorStyle::Block => {
-                                    fg = colors::BG;
-                                    bg = colors::FG;
+                                    fg = self.theme.bg;
+                                    bg = self.theme.cursor;
                                 }
                                 CursorStyle::Underline | CursorStyle::Bar => {
-                                    bg = [0.3, 0.3, 0.35, 1.0];
+                                    bg = self.theme.cursor_bar();
                                 }
                             }
                         }
@@ -295,11 +297,17 @@ impl App {
         };
 
         let (cols, _) = renderer.grid_size();
+        let tab_bg = self.theme.tab_bg();
+        let tab_fg = self.theme.tab_fg();
+        let active_bg = self.theme.tab_active_bg();
+        let active_fg = self.theme.tab_active_fg();
+        let sep_fg = self.theme.tab_separator();
+
         let mut row = vec![
             RenderCell {
                 ch: ' ',
-                fg: [0.5, 0.5, 0.5, 1.0],
-                bg: [0.15, 0.15, 0.17, 1.0],
+                fg: tab_fg,
+                bg: tab_bg,
             };
             cols as usize
         ];
@@ -315,16 +323,8 @@ impl App {
                 }
                 row[col] = RenderCell {
                     ch,
-                    fg: if is_active {
-                        [1.0, 1.0, 1.0, 1.0]
-                    } else {
-                        [0.5, 0.5, 0.5, 1.0]
-                    },
-                    bg: if is_active {
-                        [0.25, 0.25, 0.28, 1.0]
-                    } else {
-                        [0.15, 0.15, 0.17, 1.0]
-                    },
+                    fg: if is_active { active_fg } else { tab_fg },
+                    bg: if is_active { active_bg } else { tab_bg },
                 };
                 col += 1;
             }
@@ -333,8 +333,8 @@ impl App {
             if col < cols as usize {
                 row[col] = RenderCell {
                     ch: '|',
-                    fg: [0.3, 0.3, 0.3, 1.0],
-                    bg: [0.15, 0.15, 0.17, 1.0],
+                    fg: sep_fg,
+                    bg: tab_bg,
                 };
                 col += 1;
             }
@@ -481,8 +481,8 @@ impl App {
         };
 
         let (cols, _) = renderer.grid_size();
-        let bg = [0.18, 0.18, 0.22, 1.0];
-        let fg = [0.9, 0.9, 0.9, 1.0];
+        let bg = self.theme.search_bg();
+        let fg = self.theme.search_fg();
         let mut row = vec![RenderCell { ch: ' ', fg, bg }; cols as usize];
 
         // "Find: <query>  N/M"
@@ -504,7 +504,7 @@ impl App {
         // Cursor position (blinking underscore after query)
         let cursor_pos = 7 + search.query.len(); // " Find: " is 7 chars
         if cursor_pos < cols as usize {
-            row[cursor_pos].bg = [0.5, 0.5, 0.6, 1.0];
+            row[cursor_pos].bg = self.theme.cursor_bar();
         }
 
         vec![row]
@@ -587,11 +587,11 @@ impl App {
 
         let (cols, _) = renderer.grid_size();
         let cols = cols as usize;
-        let bg = [0.12, 0.14, 0.20, 1.0];
-        let title_fg = [1.0, 0.8, 0.2, 1.0]; // Gold
-        let desc_fg = [0.7, 0.7, 0.75, 1.0];
-        let action_fg = [0.4, 0.9, 0.4, 1.0]; // Green
-        let hint_fg = [0.5, 0.5, 0.55, 1.0];
+        let bg = self.theme.ai_overlay_bg();
+        let title_fg = [1.0, 0.8, 0.2, 1.0]; // Gold — intentionally fixed for visibility
+        let desc_fg = self.theme.fg;
+        let action_fg = [0.4, 0.9, 0.4, 1.0]; // Green — intentionally fixed
+        let hint_fg = self.theme.tab_fg();
 
         let mut rows: Vec<Vec<RenderCell>> = Vec::new();
 
@@ -717,7 +717,8 @@ impl ApplicationHandler for App {
         );
 
         self.scale_factor = window.scale_factor() as f32;
-        let renderer = Renderer::new(window.clone(), self.scale_factor, self.font_size);
+        let mut renderer = Renderer::new(window.clone(), self.scale_factor, self.font_size);
+        renderer.clear_color = self.theme.bg;
 
         let (cols, rows) = renderer.grid_size();
         self.tab_bar = TabBar::new(cols as usize, rows as usize);
@@ -1099,7 +1100,7 @@ impl ApplicationHandler for App {
 
                 for rect in &rects {
                     // Fill pane background
-                    renderer.build_rect(rect.x, rect.y, rect.w, rect.h, colors::BG, &mut vertices);
+                    renderer.build_rect(rect.x, rect.y, rect.w, rect.h, self.theme.bg, &mut vertices);
 
                     if let Some(pane) = find_pane_ref(&tab.root, rect.id) {
                         let is_focused = rect.id == focused_id;
@@ -1110,6 +1111,7 @@ impl ApplicationHandler for App {
 
                 // Dividers between panes
                 if rects.len() > 1 {
+                    let div_color = self.theme.divider();
                     // Draw divider lines between adjacent panes
                     for i in 0..rects.len() {
                         for j in (i + 1)..rects.len() {
@@ -1120,14 +1122,14 @@ impl ApplicationHandler for App {
                                 let div_x = a.x + a.w;
                                 let div_y = a.y.min(b.y);
                                 let div_h = a.h.max(b.h);
-                                renderer.build_divider(div_x, div_y, 1.0, div_h, &mut vertices);
+                                renderer.build_divider(div_x, div_y, 1.0, div_h, div_color, &mut vertices);
                             }
                             // Horizontal divider (stacked)
                             if (a.y + a.h - b.y).abs() < 2.0 {
                                 let div_x = a.x.min(b.x);
                                 let div_y = a.y + a.h;
                                 let div_w = a.w.max(b.w);
-                                renderer.build_divider(div_x, div_y, div_w, 1.0, &mut vertices);
+                                renderer.build_divider(div_x, div_y, div_w, 1.0, div_color, &mut vertices);
                             }
                         }
                     }
@@ -1216,6 +1218,8 @@ fn main() {
     let event_loop = EventLoop::new().expect("Failed to create event loop");
     let mut app = App::new();
     app.font_size = config.font.size;
+    app.theme = config.theme.resolve();
+    log::info!("Using theme: {}", app.theme.name);
     app.config = config;
 
     event_loop.run_app(&mut app).expect("Event loop failed");
