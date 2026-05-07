@@ -113,7 +113,9 @@ struct App {
     /// Ghost text for AI autocomplete.
     ghost_text: Option<String>,
     ghost_text_debounce: Instant,
-    pending_autocomplete: bool,
+    /// `Some(t)` while a request is in flight (sent at `t`). Auto-expires after a
+    /// timeout so a dropped IPC response doesn't permanently block autocomplete.
+    pending_autocomplete: Option<Instant>,
     /// True after the user typed and we haven't fired an autocomplete request yet
     /// for that edit. Reset to true on every keystroke so each pause re-arms one fire.
     autocomplete_armed: bool,
@@ -146,7 +148,7 @@ impl App {
             last_click_pos: (0, 0),
             ghost_text: None,
             ghost_text_debounce: Instant::now(),
-            pending_autocomplete: false,
+            pending_autocomplete: None,
             autocomplete_armed: false,
         }
     }
@@ -1317,10 +1319,10 @@ impl ApplicationHandler for App {
                             ai::AiMessage::NoSuggestion => {}
                             ai::AiMessage::Completion(text) => {
                                 self.ghost_text = Some(text);
-                                self.pending_autocomplete = false;
+                                self.pending_autocomplete = None;
                             }
                             ai::AiMessage::NoCompletion => {
-                                self.pending_autocomplete = false;
+                                self.pending_autocomplete = None;
                             }
                         }
                     }
@@ -1329,9 +1331,18 @@ impl ApplicationHandler for App {
                 // Autocomplete: fire once, 300ms after the user stops typing.
                 // `autocomplete_armed` is set on every keystroke and cleared after firing,
                 // so we don't keep hammering the LLM after a NoCompletion.
+                // Pending requests time out after 5s so a dropped response can't
+                // permanently block future requests.
+                let pending = matches!(
+                    self.pending_autocomplete,
+                    Some(t) if t.elapsed() < Duration::from_secs(5)
+                );
+                if !pending {
+                    self.pending_autocomplete = None;
+                }
                 if self.autocomplete_armed
                     && self.ghost_text.is_none()
-                    && !self.pending_autocomplete
+                    && !pending
                     && self.ghost_text_debounce.elapsed() > Duration::from_millis(300)
                 {
                     if let Some(pane) = self.find_focused_pane_ref() {
@@ -1349,7 +1360,7 @@ impl ApplicationHandler for App {
                                 let history = recent_history(&pane.terminal.grid, pane.terminal.cursor_y, 10);
                                 if let Some(ref ai_client) = self.ai_client {
                                     ai_client.autocomplete(typed, &cwd, &history);
-                                    self.pending_autocomplete = true;
+                                    self.pending_autocomplete = Some(Instant::now());
                                     self.autocomplete_armed = false;
                                 }
                             }

@@ -93,9 +93,15 @@ impl AiClient {
         let stream = match self.stream {
             Some(ref s) => match s.try_clone() {
                 Ok(s) => s,
-                Err(_) => return,
+                Err(_) => {
+                    let _ = self.tx.send(AiMessage::NoSuggestion);
+                    return;
+                }
             },
-            None => return,
+            None => {
+                let _ = self.tx.send(AiMessage::NoSuggestion);
+                return;
+            }
         };
 
         let request = format!(
@@ -107,9 +113,10 @@ impl AiClient {
 
         let tx = self.tx.clone();
         thread::spawn(move || {
-            if let Some(msg) = send_request(stream, &request) {
-                let _ = tx.send(msg);
-            }
+            // Always send something back so the caller can clear its pending flag,
+            // even when the IPC fails (timeout, connection dropped, etc).
+            let msg = send_request(stream, &request).unwrap_or(AiMessage::NoSuggestion);
+            let _ = tx.send(msg);
         });
     }
 
@@ -118,9 +125,15 @@ impl AiClient {
         let stream = match self.stream {
             Some(ref s) => match s.try_clone() {
                 Ok(s) => s,
-                Err(_) => return,
+                Err(_) => {
+                    let _ = self.tx.send(AiMessage::NoCompletion);
+                    return;
+                }
             },
-            None => return,
+            None => {
+                let _ = self.tx.send(AiMessage::NoCompletion);
+                return;
+            }
         };
 
         let request = format!(
@@ -132,9 +145,8 @@ impl AiClient {
 
         let tx = self.tx.clone();
         thread::spawn(move || {
-            if let Some(msg) = send_request(stream, &request) {
-                let _ = tx.send(msg);
-            }
+            let msg = send_request(stream, &request).unwrap_or(AiMessage::NoCompletion);
+            let _ = tx.send(msg);
         });
     }
 
