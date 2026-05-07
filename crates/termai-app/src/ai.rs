@@ -271,15 +271,20 @@ fn parse_response(json: &str) -> Option<AiMessage> {
 }
 
 fn extract_json_string(json: &str, key: &str) -> Option<String> {
-    let pattern = format!("\"{}\"", key);
-    let idx = json.find(&pattern)?;
-    let rest = &json[idx + pattern.len()..];
-    // Skip whitespace and colon
-    let rest = rest.trim_start();
-    let rest = rest.strip_prefix(':')?;
-    let rest = rest.trim_start();
-    // Read string value
-    let rest = rest.strip_prefix('"')?;
+    // Look for `"key"` where the next non-space char is `:` so we don't false-match
+    // on a *value* that happens to share the same text (e.g. {"type":"completion"}
+    // would otherwise match `"completion"` as a key when looking up "completion").
+    let needle = format!("\"{}\"", key);
+    let mut search_from = 0;
+    let value_start = loop {
+        let idx = json[search_from..].find(&needle)? + search_from;
+        let after = json[idx + needle.len()..].trim_start();
+        if let Some(rest) = after.strip_prefix(':') {
+            break rest.trim_start();
+        }
+        search_from = idx + needle.len();
+    };
+    let rest = value_start.strip_prefix('"')?;
     let mut result = String::new();
     let mut chars = rest.chars();
     loop {
@@ -395,6 +400,15 @@ mod tests {
         let json = r#"{"type":"suggestion","title":"NVM não carregado"}"#;
         assert_eq!(extract_json_string(json, "type"), Some("suggestion".to_string()));
         assert_eq!(extract_json_string(json, "title"), Some("NVM não carregado".to_string()));
+    }
+
+    #[test]
+    fn test_extract_json_string_skips_value_collision() {
+        // Regression: looking up "completion" must skip the value of "type":"completion"
+        // and find the actual key "completion" further on.
+        let json = r#"{"type":"completion","completion":"ckout"}"#;
+        assert_eq!(extract_json_string(json, "type"), Some("completion".to_string()));
+        assert_eq!(extract_json_string(json, "completion"), Some("ckout".to_string()));
     }
 
     #[test]
