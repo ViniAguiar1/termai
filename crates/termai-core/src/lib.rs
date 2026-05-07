@@ -7,6 +7,7 @@ pub struct Cell {
     pub fg: Color,
     pub bg: Color,
     pub bold: bool,
+    pub italic: bool,
     pub underline: bool,
     pub inverse: bool,
 }
@@ -18,6 +19,7 @@ impl Default for Cell {
             fg: Color::Default,
             bg: Color::Default,
             bold: false,
+            italic: false,
             underline: false,
             inverse: false,
         }
@@ -44,6 +46,7 @@ struct Attrs {
     fg: Color,
     bg: Color,
     bold: bool,
+    italic: bool,
     underline: bool,
     inverse: bool,
 }
@@ -54,6 +57,7 @@ impl Default for Attrs {
             fg: Color::Default,
             bg: Color::Default,
             bold: false,
+            italic: false,
             underline: false,
             inverse: false,
         }
@@ -416,9 +420,11 @@ impl Terminal {
             match code {
                 0 => self.attrs = Attrs::default(),
                 1 => self.attrs.bold = true,
+                3 => self.attrs.italic = true,
                 4 => self.attrs.underline = true,
                 7 => self.attrs.inverse = true,
                 22 => self.attrs.bold = false,
+                23 => self.attrs.italic = false,
                 24 => self.attrs.underline = false,
                 27 => self.attrs.inverse = false,
                 30..=37 => self.attrs.fg = Color::Indexed((code - 30) as u8),
@@ -482,6 +488,7 @@ impl Perform for Terminal {
         cell.fg = self.attrs.fg;
         cell.bg = self.attrs.bg;
         cell.bold = self.attrs.bold;
+        cell.italic = self.attrs.italic;
         cell.underline = self.attrs.underline;
         cell.inverse = self.attrs.inverse;
         self.cursor_x += 1;

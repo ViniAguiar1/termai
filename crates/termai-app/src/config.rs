@@ -28,6 +28,10 @@ pub struct FontConfig {
     /// other variants) when no per-variant family is given. Lets a user write
     /// `[font] family = "..."` without spelling out every variant.
     pub family: Option<String>,
+    /// When true (default), apply OpenType ligatures (== => -> != >= <= ::,
+    /// etc) using the configured font's GSUB tables. Set to false to keep
+    /// every cell rasterized one-char-at-a-time, like Alacritty.
+    pub ligatures: bool,
     pub normal: FontVariant,
     pub bold: FontVariant,
     pub italic: FontVariant,
@@ -95,6 +99,7 @@ impl Default for FontConfig {
         Self {
             size: 14.0,
             family: None,
+            ligatures: true,
             normal: FontVariant::default(),
             bold: FontVariant::default(),
             italic: FontVariant::default(),

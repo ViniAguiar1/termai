@@ -1,6 +1,7 @@
 pub mod atlas;
+pub mod shaper;
 
-use atlas::{GlyphAtlas, GlyphInfo};
+use atlas::{FontStyle, GlyphAtlas, GlyphInfo};
 use bytemuck::{Pod, Zeroable};
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
@@ -35,6 +36,13 @@ pub struct RenderCell {
     pub bg: [f32; 4],
     pub underline: bool,
     pub bold: bool,
+    pub italic: bool,
+    /// When `Some`, render this glyph id from the resolved font instead of
+    /// looking up `ch` — used by the shaper to insert ligature glyphs.
+    pub glyph_id: Option<u16>,
+    /// Hide this cell's glyph entirely. Set on the trailing cells of a
+    /// ligature (e.g. the `=` of `==` after the shaper collapses it).
+    pub suppress_glyph: bool,
 }
 
 /// GPU-accelerated terminal text renderer.
@@ -48,12 +56,14 @@ pub struct Renderer {
     bind_group: wgpu::BindGroup,
     uniform_buffer: wgpu::Buffer,
     atlas: GlyphAtlas,
-    /// Active regular-weight font bytes, kept so `rebuild_atlas` (zoom) can
+    /// Regular-weight font bytes, kept so `rebuild_atlas` (zoom) can
     /// re-rasterize without re-reading the system font.
     font_bytes: Vec<u8>,
-    /// Optional bold-weight font bytes. When `None`, bold cells are rendered
-    /// with the regular glyph (no synthetic bolding yet).
+    /// Optional bold/italic/bold-italic font bytes. Each `None` falls back to
+    /// regular when the corresponding `RenderCell` style is requested.
     bold_font_bytes: Option<Vec<u8>>,
+    italic_font_bytes: Option<Vec<u8>>,
+    bold_italic_font_bytes: Option<Vec<u8>>,
     width: u32,
     height: u32,
     /// Background clear color (set from theme).
@@ -71,6 +81,8 @@ impl Renderer {
         font_size: f32,
         custom_font: Option<Vec<u8>>,
         custom_bold_font: Option<Vec<u8>>,
+        custom_italic_font: Option<Vec<u8>>,
+        custom_bold_italic_font: Option<Vec<u8>>,
     ) -> Self {
         let size = window.inner_size();
         let width = size.width.max(1);
@@ -128,7 +140,15 @@ impl Renderer {
         let pixel_font_size = font_size * scale_factor;
         let font_bytes = custom_font.unwrap_or_else(|| EMBEDDED_FONT.to_vec());
         let bold_font_bytes = custom_bold_font;
-        let atlas = GlyphAtlas::new(&font_bytes, bold_font_bytes.as_deref(), pixel_font_size);
+        let italic_font_bytes = custom_italic_font;
+        let bold_italic_font_bytes = custom_bold_italic_font;
+        let atlas = GlyphAtlas::new(
+            &font_bytes,
+            bold_font_bytes.as_deref(),
+            italic_font_bytes.as_deref(),
+            bold_italic_font_bytes.as_deref(),
+            pixel_font_size,
+        );
 
         // Upload atlas texture to GPU
         let atlas_texture = device.create_texture_with_data(
@@ -307,6 +327,8 @@ impl Renderer {
             atlas,
             font_bytes,
             bold_font_bytes,
+            italic_font_bytes,
+            bold_italic_font_bytes,
             width,
             height,
             clear_color: [0.07, 0.07, 0.09, 1.0],
@@ -338,6 +360,8 @@ impl Renderer {
         self.atlas = GlyphAtlas::new(
             &self.font_bytes,
             self.bold_font_bytes.as_deref(),
+            self.italic_font_bytes.as_deref(),
+            self.bold_italic_font_bytes.as_deref(),
             pixel_font_size,
         );
 
@@ -403,6 +427,13 @@ impl Renderer {
         (self.atlas.cell_width, self.atlas.cell_height)
     }
 
+    /// Bytes of the regular-weight font, used by the shaper for ligature
+    /// substitution. Bold/italic runs reuse the regular font's GSUB tables —
+    /// per-style shaping with the right weight is a future improvement.
+    pub fn regular_font_bytes(&self) -> &[u8] {
+        &self.font_bytes
+    }
+
     /// Grid dimensions that fit the current window.
     pub fn grid_size(&self) -> (u32, u32) {
         let cols = (self.width as f32 / self.atlas.cell_width).floor() as u32;
@@ -445,9 +476,14 @@ impl Renderer {
                     1.0,
                 );
 
-                if cell.ch != ' ' {
-                    if let Some(glyph) = self.atlas.get_or_insert(cell.ch, cell.bold) {
-                        let glyph = *glyph; // copy to release borrow
+                if !cell.suppress_glyph && cell.ch != ' ' {
+                    let style = FontStyle::from_attrs(cell.bold, cell.italic);
+                    let glyph_opt = match cell.glyph_id {
+                        Some(id) => self.atlas.get_or_insert_glyph_id(id, style),
+                        None => self.atlas.get_or_insert(cell.ch, style),
+                    };
+                    if let Some(glyph) = glyph_opt {
+                        let glyph = *glyph;
                         self.push_glyph_quad(vertices, x, y, &glyph, cell.fg, cell.bg);
                     }
                 }

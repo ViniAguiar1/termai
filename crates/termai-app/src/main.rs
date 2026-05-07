@@ -244,7 +244,7 @@ impl App {
         // Detect URLs once per frame so we can underline them like hyperlinks.
         let urls = pane.terminal.detect_urls();
 
-        visible
+        let mut rendered: Vec<Vec<RenderCell>> = visible
             .iter()
             .enumerate()
             .map(|(row_idx, row)| {
@@ -323,11 +323,34 @@ impl App {
                             underline = false;
                         }
 
-                        RenderCell { ch: cell.c, fg, bg, underline, bold: cell.bold }
+                        RenderCell {
+                            ch: cell.c,
+                            fg,
+                            bg,
+                            underline,
+                            bold: cell.bold,
+                            italic: cell.italic,
+                            glyph_id: None,
+                            suppress_glyph: false,
+                        }
                     })
                     .collect()
             })
-            .collect()
+            .collect();
+
+        // Apply OpenType ligatures (==, !=, =>, ->, etc) per row, when enabled.
+        // We use the regular font's GSUB table for all weights — bold/italic
+        // share the same ligature mapping in practice for programming fonts.
+        if self.config.font.ligatures {
+            if let Some(ref renderer) = self.renderer {
+                let bytes = renderer.regular_font_bytes();
+                for row in rendered.iter_mut() {
+                    termai_renderer::shaper::apply_ligatures_to_row(row, bytes);
+                }
+            }
+        }
+
+        rendered
     }
 
     fn build_tab_bar_cells(&self) -> Vec<Vec<RenderCell>> {
@@ -354,6 +377,9 @@ impl App {
                 bg: tab_bg,
                 underline: false,
                 bold: false,
+                italic: false,
+                glyph_id: None,
+                suppress_glyph: false,
             };
             cols as usize
         ];
@@ -373,6 +399,9 @@ impl App {
                     bg: if is_active { active_bg } else { tab_bg },
                     underline: false,
                     bold: false,
+                    italic: false,
+                    glyph_id: None,
+                    suppress_glyph: false,
                 };
                 col += 1;
             }
@@ -385,6 +414,9 @@ impl App {
                     bg: tab_bg,
                     underline: false,
                     bold: false,
+                    italic: false,
+                    glyph_id: None,
+                    suppress_glyph: false,
                 };
                 col += 1;
             }
@@ -534,7 +566,7 @@ impl App {
         let (cols, _) = renderer.grid_size();
         let bg = self.theme.search_bg();
         let fg = self.theme.search_fg();
-        let mut row = vec![RenderCell { ch: ' ', fg, bg, underline: false, bold: false }; cols as usize];
+        let mut row = vec![RenderCell { ch: ' ', fg, bg, underline: false, bold: false, italic: false, glyph_id: None, suppress_glyph: false }; cols as usize];
 
         // "Find: <query>  N/M"
         let count_str = if search.matches.is_empty() {
@@ -647,12 +679,21 @@ impl App {
         let mut rows: Vec<Vec<RenderCell>> = Vec::new();
 
         let make_row = |text: &str, fg: [f32; 4], bg: [f32; 4], cols: usize| -> Vec<RenderCell> {
-            let mut row = vec![RenderCell { ch: ' ', fg, bg, underline: false, bold: false }; cols];
+            let mut row = vec![RenderCell { ch: ' ', fg, bg, underline: false, bold: false, italic: false, glyph_id: None, suppress_glyph: false }; cols];
             for (i, ch) in text.chars().enumerate() {
                 if i >= cols {
                     break;
                 }
-                row[i] = RenderCell { ch, fg, bg, underline: false, bold: false };
+                row[i] = RenderCell {
+                    ch,
+                    fg,
+                    bg,
+                    underline: false,
+                    bold: false,
+                    italic: false,
+                    glyph_id: None,
+                    suppress_glyph: false,
+                };
             }
             row
         };
@@ -851,29 +892,29 @@ impl ApplicationHandler for App {
             }
         });
 
-        // Resolve the bold variant. Prefer an explicit [font.bold] family,
-        // otherwise fall back to the regular family with a Bold style hint —
-        // most "JetBrains Mono"-style families ship a Bold weight that font-kit
-        // will pick up that way.
-        let bold_family = self
-            .config
-            .font
-            .bold
-            .family
-            .as_deref()
-            .or_else(|| self.config.font.normal_family());
-        let bold_style = self
-            .config
-            .font
-            .bold
-            .style
-            .as_deref()
-            .unwrap_or("Bold");
-        let custom_bold_font = bold_family.and_then(|family| {
-            font::load_system_font(family, Some(bold_style)).inspect(|bytes| {
-                log::info!("Loaded bold font '{family}' ({} bytes)", bytes.len());
+        // Resolve bold/italic/bold_italic. For each, prefer an explicit
+        // [font.<variant>] family; otherwise reuse the regular family with a
+        // suitable style hint so font-kit picks the right weight/slant.
+        let resolve_variant = |variant: &config::FontVariant,
+                               default_style: &str,
+                               label: &str|
+         -> Option<Vec<u8>> {
+            let family = variant
+                .family
+                .as_deref()
+                .or_else(|| self.config.font.normal_family())?;
+            let style = variant.style.as_deref().unwrap_or(default_style);
+            font::load_system_font(family, Some(style)).inspect(|bytes| {
+                log::info!("Loaded {label} font '{family}' / {style} ({} bytes)", bytes.len());
             })
-        });
+        };
+        let custom_bold_font = resolve_variant(&self.config.font.bold, "Bold", "bold");
+        let custom_italic_font = resolve_variant(&self.config.font.italic, "Italic", "italic");
+        let custom_bold_italic_font = resolve_variant(
+            &self.config.font.bold_italic,
+            "Bold Italic",
+            "bold-italic",
+        );
 
         let mut renderer = Renderer::new(
             window.clone(),
@@ -881,6 +922,8 @@ impl ApplicationHandler for App {
             self.font_size,
             custom_font,
             custom_bold_font,
+            custom_italic_font,
+            custom_bold_italic_font,
         );
         renderer.clear_color = self.theme.bg;
 
@@ -1471,6 +1514,9 @@ impl ApplicationHandler for App {
                                     bg: theme_bg,
                                     underline: false,
                                     bold: false,
+                                    italic: false,
+                                    glyph_id: None,
+                                    suppress_glyph: false,
                                 }).collect()
                             ];
                             Some((cursor_x, cursor_y, ghost_cells))
