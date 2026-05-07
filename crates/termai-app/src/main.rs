@@ -186,8 +186,11 @@ impl App {
     fn pixel_to_cell_in_pane(&self, px: f64, py: f64, rect: &PaneRect) -> (usize, usize) {
         if let Some(ref renderer) = self.renderer {
             let (cw, ch) = renderer.cell_size();
-            let x = px as f32 * self.scale_factor - rect.x;
-            let y = py as f32 * self.scale_factor - rect.y;
+            // winit 0.30 reports CursorMoved.position in physical pixels, so no
+            // scale_factor multiplication is needed here. Renderer rects and
+            // cell_size are also in physical pixels.
+            let x = px as f32 - rect.x;
+            let y = py as f32 - rect.y;
             let col = (x / cw).floor().max(0.0) as usize;
             let row = (y / ch).floor().max(0.0) as usize;
             (col, row)
@@ -200,8 +203,8 @@ impl App {
         let (cx, cy, cw, ch) = self.content_area();
         let rects = self.tab_bar.tabs[self.tab_bar.active]
             .layout(cx, cy, cw, ch);
-        let sx = px as f32 * self.scale_factor;
-        let sy = py as f32 * self.scale_factor;
+        let sx = px as f32;
+        let sy = py as f32;
         rects.into_iter().find(|r| {
             sx >= r.x && sx < r.x + r.w && sy >= r.y && sy < r.y + r.h
         })
@@ -230,6 +233,9 @@ impl App {
         } else {
             None
         };
+
+        // Detect URLs once per frame so we can underline them like hyperlinks.
+        let urls = pane.terminal.detect_urls();
 
         visible
             .iter()
@@ -281,7 +287,12 @@ impl App {
                             }
                         }
 
-                        // URL hover highlight
+                        // URL detection: underline always, recolor on Cmd-hover.
+                        let is_url = urls.iter().any(|&(ur, us, ue)| {
+                            row_idx == ur && col_idx >= us && col_idx < ue
+                        });
+                        let mut underline = is_url;
+
                         if let Some((ur, us, ue)) = self.hovered_url {
                             if row_idx == ur && col_idx >= us && col_idx < ue {
                                 fg = [0.4, 0.6, 1.0, 1.0]; // link blue
@@ -301,9 +312,11 @@ impl App {
                                     bg = self.theme.cursor_bar();
                                 }
                             }
+                            // Don't underline the cell that's already showing the cursor.
+                            underline = false;
                         }
 
-                        RenderCell { ch: cell.c, fg, bg }
+                        RenderCell { ch: cell.c, fg, bg, underline }
                     })
                     .collect()
             })
@@ -332,6 +345,7 @@ impl App {
                 ch: ' ',
                 fg: tab_fg,
                 bg: tab_bg,
+                underline: false,
             };
             cols as usize
         ];
@@ -349,6 +363,7 @@ impl App {
                     ch,
                     fg: if is_active { active_fg } else { tab_fg },
                     bg: if is_active { active_bg } else { tab_bg },
+                    underline: false,
                 };
                 col += 1;
             }
@@ -359,6 +374,7 @@ impl App {
                     ch: '|',
                     fg: sep_fg,
                     bg: tab_bg,
+                    underline: false,
                 };
                 col += 1;
             }
@@ -374,7 +390,8 @@ impl App {
             return false;
         }
 
-        let sy = py as f32 * self.scale_factor;
+        // Mouse coords from winit 0.30 are already in physical pixels.
+        let sy = py as f32;
         if sy >= tab_h {
             return false; // Click is below tab bar
         }
@@ -385,7 +402,7 @@ impl App {
             None => return false,
         };
         let (cw, _) = renderer.cell_size();
-        let sx = px as f32 * self.scale_factor;
+        let sx = px as f32;
         let click_col = (sx / cw).floor() as usize;
 
         let mut col = 0usize;
@@ -507,7 +524,7 @@ impl App {
         let (cols, _) = renderer.grid_size();
         let bg = self.theme.search_bg();
         let fg = self.theme.search_fg();
-        let mut row = vec![RenderCell { ch: ' ', fg, bg }; cols as usize];
+        let mut row = vec![RenderCell { ch: ' ', fg, bg, underline: false }; cols as usize];
 
         // "Find: <query>  N/M"
         let count_str = if search.matches.is_empty() {
@@ -620,12 +637,12 @@ impl App {
         let mut rows: Vec<Vec<RenderCell>> = Vec::new();
 
         let make_row = |text: &str, fg: [f32; 4], bg: [f32; 4], cols: usize| -> Vec<RenderCell> {
-            let mut row = vec![RenderCell { ch: ' ', fg, bg }; cols];
+            let mut row = vec![RenderCell { ch: ' ', fg, bg, underline: false }; cols];
             for (i, ch) in text.chars().enumerate() {
                 if i >= cols {
                     break;
                 }
-                row[i] = RenderCell { ch, fg, bg };
+                row[i] = RenderCell { ch, fg, bg, underline: false };
             }
             row
         };
@@ -1339,6 +1356,7 @@ impl ApplicationHandler for App {
                                     ch: c,
                                     fg: [0.5, 0.5, 0.5, 0.8],
                                     bg: theme_bg,
+                                    underline: false,
                                 }).collect()
                             ];
                             Some((cursor_x, cursor_y, ghost_cells))
