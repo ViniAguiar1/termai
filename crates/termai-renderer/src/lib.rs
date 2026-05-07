@@ -32,6 +32,7 @@ pub struct RenderCell {
     pub ch: char,
     pub fg: [f32; 4],
     pub bg: [f32; 4],
+    pub underline: bool,
 }
 
 /// GPU-accelerated terminal text renderer.
@@ -424,6 +425,23 @@ impl Renderer {
                         let glyph = *glyph; // copy to release borrow
                         self.push_glyph_quad(vertices, x, y, &glyph, cell.fg, cell.bg);
                     }
+                }
+
+                if cell.underline {
+                    let thickness = (cell_h * 0.06).max(1.0).round();
+                    let line_y = y + cell_h - thickness - 1.0;
+                    push_quad(
+                        vertices,
+                        x,
+                        line_y,
+                        x + cell_w,
+                        line_y + thickness,
+                        [0.0, 0.0],
+                        [0.0, 0.0],
+                        cell.fg,
+                        cell.fg,
+                        1.0,
+                    );
                 }
             }
         }
