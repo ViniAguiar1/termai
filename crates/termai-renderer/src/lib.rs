@@ -393,7 +393,7 @@ impl Renderer {
 
     /// A pane region to render in a single frame.
     pub fn build_vertices(
-        &self,
+        &mut self,
         cells: &[Vec<RenderCell>],
         offset_x: f32,
         offset_y: f32,
@@ -420,8 +420,9 @@ impl Renderer {
                 );
 
                 if cell.ch != ' ' {
-                    if let Some(glyph) = self.atlas.get(cell.ch) {
-                        self.push_glyph_quad(vertices, x, y, glyph, cell.fg, cell.bg);
+                    if let Some(glyph) = self.atlas.get_or_insert(cell.ch) {
+                        let glyph = *glyph; // copy to release borrow
+                        self.push_glyph_quad(vertices, x, y, &glyph, cell.fg, cell.bg);
                     }
                 }
             }
@@ -464,8 +465,66 @@ impl Renderer {
         );
     }
 
+    /// Check if the atlas texture needs to be re-uploaded to the GPU.
+    pub fn atlas_needs_reupload(&self) -> bool {
+        self.atlas.is_dirty()
+    }
+
+    /// Re-upload the atlas texture to the GPU after new glyphs were rasterized.
+    pub fn reupload_atlas(&mut self) {
+        let atlas_texture = self.device.create_texture_with_data(
+            &self.queue,
+            &wgpu::TextureDescriptor {
+                label: Some("glyph-atlas"),
+                size: wgpu::Extent3d {
+                    width: self.atlas.texture_width,
+                    height: self.atlas.texture_height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            &self.atlas.texture_data,
+        );
+
+        let atlas_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let atlas_sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        self.bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bind-group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&atlas_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&atlas_sampler),
+                },
+            ],
+        });
+
+        self.atlas.clear_dirty();
+    }
+
     /// Render a grid of cells to the screen (single pane, backwards compatible).
-    pub fn render(&self, cells: &[Vec<RenderCell>]) -> Result<(), wgpu::SurfaceError> {
+    pub fn render(&mut self, cells: &[Vec<RenderCell>]) -> Result<(), wgpu::SurfaceError> {
         let mut vertices: Vec<Vertex> = Vec::new();
         self.build_vertices(cells, 0.0, 0.0, &mut vertices);
         self.submit_frame(&vertices)

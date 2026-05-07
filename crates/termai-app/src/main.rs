@@ -104,6 +104,16 @@ struct App {
     ai_overlay: Option<ai::AiSuggestion>,
     /// Cooldown: don't send another analysis until this time passes.
     ai_last_analysis: Instant,
+    /// URL currently under the mouse cursor (when Cmd is held).
+    hovered_url: Option<(usize, usize, usize)>, // (row, start_col, end_col)
+    /// Multi-click tracking for double/triple click.
+    last_click_time: Instant,
+    click_count: u32,
+    last_click_pos: (usize, usize),
+    /// Ghost text for AI autocomplete.
+    ghost_text: Option<String>,
+    ghost_text_debounce: Instant,
+    pending_autocomplete: bool,
 }
 
 impl App {
@@ -127,6 +137,13 @@ impl App {
             ai_client: Some(ai::AiClient::new()),
             ai_overlay: None,
             ai_last_analysis: Instant::now(),
+            hovered_url: None,
+            last_click_time: Instant::now(),
+            click_count: 0,
+            last_click_pos: (0, 0),
+            ghost_text: None,
+            ghost_text_debounce: Instant::now(),
+            pending_autocomplete: false,
         }
     }
 
@@ -261,6 +278,13 @@ impl App {
                                         break;
                                     }
                                 }
+                            }
+                        }
+
+                        // URL hover highlight
+                        if let Some((ur, us, ue)) = self.hovered_url {
+                            if row_idx == ur && col_idx >= us && col_idx < ue {
+                                fg = [0.4, 0.6, 1.0, 1.0]; // link blue
                             }
                         }
 
@@ -682,6 +706,39 @@ fn extract_command_from_error(error_line: &str, command_line: &str) -> String {
     trimmed.to_string()
 }
 
+/// Find word boundaries around the given column in a line of characters.
+fn find_word_bounds(line: &[char], col: usize) -> (usize, usize) {
+    if col >= line.len() {
+        return (col, col);
+    }
+
+    let is_delimiter = |c: char| -> bool {
+        c.is_whitespace()
+            || matches!(
+                c,
+                '/' | ':' | '.' | ',' | ';' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>'
+                    | '"' | '\'' | '|' | '&' | '=' | '+' | '-' | '*' | '!' | '?' | '#' | '@'
+                    | '$' | '%' | '^' | '~' | '`'
+            )
+    };
+
+    if is_delimiter(line[col]) {
+        return (col, col + 1);
+    }
+
+    let mut start = col;
+    while start > 0 && !is_delimiter(line[start - 1]) {
+        start -= 1;
+    }
+
+    let mut end = col + 1;
+    while end < line.len() && !is_delimiter(line[end]) {
+        end += 1;
+    }
+
+    (start, end)
+}
+
 fn find_pane_ref(node: &pane::PaneNode, id: u64) -> Option<&pane::Pane> {
     match node {
         pane::PaneNode::Leaf(pane) => {
@@ -776,6 +833,106 @@ impl ApplicationHandler for App {
                             if self.handle_tab_bar_click(self.mouse_pos.0, self.mouse_pos.1) {
                                 return;
                             }
+
+                            // Cmd+click on URL: detect URL at click position and open it
+                            if self.modifiers.super_key() {
+                                if let Some(rect) = self.find_pane_at(self.mouse_pos.0, self.mouse_pos.1) {
+                                    let (col, row) = self.pixel_to_cell_in_pane(
+                                        self.mouse_pos.0, self.mouse_pos.1, &rect,
+                                    );
+                                    let tab = &self.tab_bar.tabs[self.tab_bar.active];
+                                    if let Some(pane) = find_pane_ref(&tab.root, rect.id) {
+                                        let urls = pane.terminal.detect_urls();
+                                        for (ur, us, ue) in &urls {
+                                            if row == *ur && col >= *us && col < *ue {
+                                                let visible = pane.terminal.visible_grid();
+                                                if row < visible.len() {
+                                                    let url: String = visible[row].iter()
+                                                        .skip(*us).take(*ue - *us)
+                                                        .map(|c| c.c).collect();
+                                                    let url = url.trim().to_string();
+                                                    if !url.is_empty() {
+                                                        #[cfg(target_os = "macos")]
+                                                        let opener = "open";
+                                                        #[cfg(target_os = "linux")]
+                                                        let opener = "xdg-open";
+                                                        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+                                                        let opener = "open";
+                                                        let _ = std::process::Command::new(opener)
+                                                            .arg(&url).spawn();
+                                                    }
+                                                }
+                                                return;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Multi-click detection
+                            let now = Instant::now();
+                            if let Some(rect) = self.find_pane_at(self.mouse_pos.0, self.mouse_pos.1) {
+                                let (col, row) = self.pixel_to_cell_in_pane(
+                                    self.mouse_pos.0, self.mouse_pos.1, &rect,
+                                );
+                                // Allow nearby cells (within 2) to handle Retina subpixel jitter
+                                let col_diff = (col as i64 - self.last_click_pos.0 as i64).unsigned_abs();
+                                let is_nearby = col_diff <= 2
+                                    && row == self.last_click_pos.1;
+                                let is_fast = now.duration_since(self.last_click_time)
+                                    < Duration::from_millis(400);
+
+                                if is_fast && is_nearby && self.click_count >= 1 && self.click_count < 3 {
+                                    self.click_count += 1;
+                                } else {
+                                    self.click_count = 1;
+                                }
+                                self.last_click_time = now;
+                                self.last_click_pos = (col, row);
+
+                                match self.click_count {
+                                    2 => {
+                                        // Double-click: select word
+                                        self.tab_bar.active_tab().focused_pane_id = rect.id;
+                                        let tab = &self.tab_bar.tabs[self.tab_bar.active];
+                                        if let Some(pane) = find_pane_ref(&tab.root, rect.id) {
+                                            let visible = pane.terminal.visible_grid();
+                                            if row < visible.len() {
+                                                let line: Vec<char> = visible[row]
+                                                    .iter().map(|c| c.c).collect();
+                                                let (ws, we) = find_word_bounds(&line, col);
+                                                self.selection = Some(Selection {
+                                                    start_col: ws,
+                                                    start_row: row,
+                                                    end_col: we,
+                                                    end_row: row,
+                                                });
+                                                self.copy_selection();
+                                            }
+                                        }
+                                        self.mouse_pressed = false;
+                                        return;
+                                    }
+                                    3 => {
+                                        // Triple-click: select line
+                                        self.tab_bar.active_tab().focused_pane_id = rect.id;
+                                        let tab = &self.tab_bar.tabs[self.tab_bar.active];
+                                        if let Some(pane) = find_pane_ref(&tab.root, rect.id) {
+                                            self.selection = Some(Selection {
+                                                start_col: 0,
+                                                start_row: row,
+                                                end_col: pane.terminal.cols,
+                                                end_row: row,
+                                            });
+                                            self.copy_selection();
+                                        }
+                                        self.mouse_pressed = false;
+                                        return;
+                                    }
+                                    _ => {} // single click: fall through
+                                }
+                            }
+
                             self.mouse_pressed = true;
                             self.mouse_just_pressed = true;
                             self.selection = None;
@@ -790,6 +947,24 @@ impl ApplicationHandler for App {
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse_pos = (position.x, position.y);
 
+                // URL hover detection when Cmd is held
+                self.hovered_url = None;
+                if self.modifiers.super_key() {
+                    if let Some(rect) = self.find_pane_at(position.x, position.y) {
+                        let (col, row) = self.pixel_to_cell_in_pane(position.x, position.y, &rect);
+                        let tab = &self.tab_bar.tabs[self.tab_bar.active];
+                        if let Some(pane) = find_pane_ref(&tab.root, rect.id) {
+                            let urls = pane.terminal.detect_urls();
+                            for (ur, us, ue) in &urls {
+                                if row == *ur && col >= *us && col < *ue {
+                                    self.hovered_url = Some((*ur, *us, *ue));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Handle click on tab bar (on first move after press)
                 if self.mouse_just_pressed {
                     self.mouse_just_pressed = false;
@@ -798,7 +973,7 @@ impl ApplicationHandler for App {
                         return;
                     }
                 }
-                // Click to focus pane
+                // Click to focus pane + drag selection
                 if self.mouse_pressed {
                     if let Some(rect) = self.find_pane_at(position.x, position.y) {
                         self.tab_bar.active_tab().focused_pane_id = rect.id;
@@ -1038,6 +1213,25 @@ impl ApplicationHandler for App {
 
                 self.selection = None;
 
+                // Ghost text acceptance: Tab or Right arrow accepts the suggestion
+                if self.ghost_text.is_some() {
+                    match &event.logical_key {
+                        Key::Named(NamedKey::Tab) | Key::Named(NamedKey::ArrowRight) => {
+                            if let Some(text) = self.ghost_text.take() {
+                                let tab = self.tab_bar.active_tab();
+                                let id = tab.focused_pane_id;
+                                if let Some(pane) = tab.root.find_pane(id) {
+                                    pane.write(text.as_bytes());
+                                }
+                            }
+                            return;
+                        }
+                        _ => {
+                            self.ghost_text = None;
+                        }
+                    }
+                }
+
                 // Send key to focused pane
                 let tab = self.tab_bar.active_tab();
                 let id = tab.focused_pane_id;
@@ -1046,6 +1240,7 @@ impl ApplicationHandler for App {
                     if !bytes.is_empty() {
                         // Dismiss AI overlay on new input
                         self.ai_overlay = None;
+                        self.ghost_text_debounce = Instant::now();
                         pane.write(&bytes);
                     }
                 }
@@ -1060,7 +1255,7 @@ impl ApplicationHandler for App {
                     self.check_for_errors();
                 }
 
-                // Poll AI client for suggestions
+                // Poll AI client for suggestions and completions
                 if let Some(ref ai_client) = self.ai_client {
                     if let Some(msg) = ai_client.poll() {
                         match msg {
@@ -1068,6 +1263,35 @@ impl ApplicationHandler for App {
                                 self.ai_overlay = Some(s);
                             }
                             ai::AiMessage::NoSuggestion => {}
+                            ai::AiMessage::Completion(text) => {
+                                self.ghost_text = Some(text);
+                                self.pending_autocomplete = false;
+                            }
+                            ai::AiMessage::NoCompletion => {
+                                self.pending_autocomplete = false;
+                            }
+                        }
+                    }
+                }
+
+                // Autocomplete debounce: request after 300ms of idle typing
+                if self.ghost_text.is_none() && !self.pending_autocomplete {
+                    let elapsed = self.ghost_text_debounce.elapsed();
+                    if elapsed > Duration::from_millis(300) && elapsed < Duration::from_millis(500) {
+                        if let Some(pane) = self.find_focused_pane_ref() {
+                            if pane.terminal.cursor_x > 2 {
+                                let row = &pane.terminal.grid[pane.terminal.cursor_y];
+                                let line: String = row.iter()
+                                    .take(pane.terminal.cursor_x)
+                                    .map(|c| c.c).collect();
+                                let line = line.trim().to_string();
+                                if line.len() > 2 {
+                                    if let Some(ref ai_client) = self.ai_client {
+                                        ai_client.autocomplete(&line, ".", "");
+                                        self.pending_autocomplete = true;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1079,52 +1303,78 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                let renderer = match self.renderer {
-                    Some(ref r) => r,
-                    None => return,
-                };
+                if self.renderer.is_none() {
+                    return;
+                }
 
+                // Build all cell data first (before borrowing renderer mutably)
+                let tab_bar_cells = self.build_tab_bar_cells();
+                let (cx, cy, cw, ch) = self.content_area();
+                let tab = &self.tab_bar.tabs[self.tab_bar.active];
+                let rects = tab.layout(cx, cy, cw, ch);
+                let focused_id = tab.focused_pane_id;
+                let theme_bg = self.theme.bg;
+                let div_color = self.theme.divider();
+
+                let mut pane_cells: Vec<(PaneRect, Vec<Vec<RenderCell>>)> = Vec::new();
+                for rect in &rects {
+                    if let Some(pane) = find_pane_ref(&tab.root, rect.id) {
+                        let is_focused = rect.id == focused_id;
+                        let cells = self.build_pane_cells(pane, is_focused);
+                        pane_cells.push((rect.clone(), cells));
+                    }
+                }
+
+                let search_bar_cells = self.build_search_bar_cells();
+                let overlay_cells = self.build_ai_overlay_cells();
+
+                // Ghost text (autocomplete suggestion) data
+                let ghost_data = if let Some(ref ghost) = self.ghost_text {
+                    if let Some(pane) = find_pane_ref(&tab.root, focused_id) {
+                        if pane.terminal.scroll_offset == 0 {
+                            let cursor_x = pane.terminal.cursor_x;
+                            let cursor_y = pane.terminal.cursor_y;
+                            let ghost_cells: Vec<Vec<RenderCell>> = vec![
+                                ghost.chars().map(|c| RenderCell {
+                                    ch: c,
+                                    fg: [0.5, 0.5, 0.5, 0.8],
+                                    bg: theme_bg,
+                                }).collect()
+                            ];
+                            Some((cursor_x, cursor_y, ghost_cells))
+                        } else { None }
+                    } else { None }
+                } else { None };
+
+                // Now borrow renderer mutably for vertex building
+                let renderer = self.renderer.as_mut().unwrap();
                 let mut vertices: Vec<Vertex> = Vec::new();
 
                 // Tab bar
-                let tab_bar_cells = self.build_tab_bar_cells();
                 if !tab_bar_cells.is_empty() {
                     renderer.build_vertices(&tab_bar_cells, 0.0, 0.0, &mut vertices);
                 }
 
                 // Pane content
-                let (cx, cy, cw, ch) = self.content_area();
-                let tab = &self.tab_bar.tabs[self.tab_bar.active];
-                let rects = tab.layout(cx, cy, cw, ch);
-                let focused_id = tab.focused_pane_id;
-
                 for rect in &rects {
-                    // Fill pane background
-                    renderer.build_rect(rect.x, rect.y, rect.w, rect.h, self.theme.bg, &mut vertices);
-
-                    if let Some(pane) = find_pane_ref(&tab.root, rect.id) {
-                        let is_focused = rect.id == focused_id;
-                        let cells = self.build_pane_cells(pane, is_focused);
-                        renderer.build_vertices(&cells, rect.x, rect.y, &mut vertices);
-                    }
+                    renderer.build_rect(rect.x, rect.y, rect.w, rect.h, theme_bg, &mut vertices);
+                }
+                for (rect, cells) in &pane_cells {
+                    renderer.build_vertices(cells, rect.x, rect.y, &mut vertices);
                 }
 
                 // Dividers between panes
                 if rects.len() > 1 {
-                    let div_color = self.theme.divider();
-                    // Draw divider lines between adjacent panes
                     for i in 0..rects.len() {
                         for j in (i + 1)..rects.len() {
                             let a = &rects[i];
                             let b = &rects[j];
-                            // Vertical divider (side by side)
                             if (a.x + a.w - b.x).abs() < 2.0 {
                                 let div_x = a.x + a.w;
                                 let div_y = a.y.min(b.y);
                                 let div_h = a.h.max(b.h);
                                 renderer.build_divider(div_x, div_y, 1.0, div_h, div_color, &mut vertices);
                             }
-                            // Horizontal divider (stacked)
                             if (a.y + a.h - b.y).abs() < 2.0 {
                                 let div_x = a.x.min(b.x);
                                 let div_y = a.y + a.h;
@@ -1135,15 +1385,23 @@ impl ApplicationHandler for App {
                     }
                 }
 
+                // Ghost text (autocomplete)
+                if let Some((cursor_x, cursor_y, ref ghost_cells)) = ghost_data {
+                    if let Some(rect) = rects.iter().find(|r| r.id == focused_id) {
+                        let (cw_px, ch_px) = renderer.cell_size();
+                        let ghost_x = rect.x + (cursor_x as f32) * cw_px;
+                        let ghost_y = rect.y + (cursor_y as f32) * ch_px;
+                        renderer.build_vertices(ghost_cells, ghost_x, ghost_y, &mut vertices);
+                    }
+                }
+
                 // Search bar
-                let search_bar_cells = self.build_search_bar_cells();
                 if !search_bar_cells.is_empty() {
-                    let search_y = cy + ch; // below content area
+                    let search_y = cy + ch;
                     renderer.build_vertices(&search_bar_cells, 0.0, search_y, &mut vertices);
                 }
 
-                // AI suggestion overlay (at bottom of focused pane)
-                let overlay_cells = self.build_ai_overlay_cells();
+                // AI suggestion overlay
                 if !overlay_cells.is_empty() {
                     if let Some(rect) = rects.iter().find(|r| r.id == focused_id) {
                         let (_, cell_h) = renderer.cell_size();
@@ -1151,6 +1409,11 @@ impl ApplicationHandler for App {
                         let overlay_y = (rect.y + rect.h - overlay_h).max(rect.y);
                         renderer.build_vertices(&overlay_cells, rect.x, overlay_y, &mut vertices);
                     }
+                }
+
+                // Re-upload atlas if new glyphs were rasterized
+                if renderer.atlas_needs_reupload() {
+                    renderer.reupload_atlas();
                 }
 
                 match renderer.submit_frame(&vertices) {

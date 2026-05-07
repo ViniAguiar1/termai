@@ -19,12 +19,31 @@ var llmClient *llm.Client
 
 const defaultSocketPath = "/tmp/termai-ai.sock"
 
+// BaseRequest extracts just the type field to route requests.
+type BaseRequest struct {
+	Type string `json:"type"`
+}
+
 // AnalyzeRequest is the JSON request from the Rust terminal.
 type AnalyzeRequest struct {
 	Type     string `json:"type"`
 	Command  string `json:"command"`
 	Output   string `json:"output"`
 	ExitCode int    `json:"exit_code"`
+}
+
+// AutocompleteRequest is a request for command completion.
+type AutocompleteRequest struct {
+	Type       string `json:"type"`
+	PartialCmd string `json:"partial_cmd"`
+	Cwd        string `json:"cwd"`
+	History    string `json:"history"`
+}
+
+// AutocompleteResponse is returned for completion requests.
+type AutocompleteResponse struct {
+	Type       string `json:"type"`
+	Completion string `json:"completion,omitempty"`
 }
 
 // ActionResponse is a single suggested action.
@@ -121,57 +140,96 @@ func handleConnection(conn net.Conn) {
 	encoder := json.NewEncoder(conn)
 
 	for {
-		var req AnalyzeRequest
-		if err := decoder.Decode(&req); err != nil {
-			return // Connection closed or invalid JSON
+		var raw json.RawMessage
+		if err := decoder.Decode(&raw); err != nil {
+			return
 		}
 
-		if req.Type != "analyze" {
+		var base BaseRequest
+		if err := json.Unmarshal(raw, &base); err != nil {
 			continue
 		}
 
-		errorOutput := req.Output
-		var suggestion *analyzer.Suggestion
-
-		// LLM first — provides the best analysis
-		if llmClient != nil {
-			llmSuggestion, err := llmClient.Analyze(req.Command, errorOutput)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "LLM error: %v\n", err)
-			} else {
-				suggestion = llmSuggestion
+		switch base.Type {
+		case "analyze":
+			var req AnalyzeRequest
+			if err := json.Unmarshal(raw, &req); err != nil {
+				continue
 			}
-		}
+			handleAnalyze(encoder, req)
 
-		// Fall back to pattern matching if LLM is unavailable or failed
-		if suggestion == nil {
-			suggestion = analyzer.AnalyzeCommand(req.Command, errorOutput)
-		}
-
-		if suggestion == nil {
-			resp := AnalyzeResponse{Type: "no_suggestion"}
-			_ = encoder.Encode(resp)
-			continue
-		}
-
-		actions := make([]ActionResponse, 0, len(suggestion.Actions))
-		for _, a := range suggestion.Actions {
-			if a.Command == "" {
-				continue // Skip guidance-only actions
+		case "autocomplete":
+			var req AutocompleteRequest
+			if err := json.Unmarshal(raw, &req); err != nil {
+				continue
 			}
-			actions = append(actions, ActionResponse{
-				Label:   a.Label,
-				Command: a.Command,
-				Risk:    string(a.Risk),
-			})
+			handleAutocomplete(encoder, req)
 		}
-
-		resp := AnalyzeResponse{
-			Type:        "suggestion",
-			Title:       suggestion.Title,
-			Description: suggestion.Description,
-			Actions:     actions,
-		}
-		_ = encoder.Encode(resp)
 	}
+}
+
+func handleAnalyze(encoder *json.Encoder, req AnalyzeRequest) {
+	errorOutput := req.Output
+	var suggestion *analyzer.Suggestion
+
+	if llmClient != nil {
+		llmSuggestion, err := llmClient.Analyze(req.Command, errorOutput)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "LLM error: %v\n", err)
+		} else {
+			suggestion = llmSuggestion
+		}
+	}
+
+	if suggestion == nil {
+		suggestion = analyzer.AnalyzeCommand(req.Command, errorOutput)
+	}
+
+	if suggestion == nil {
+		_ = encoder.Encode(AnalyzeResponse{Type: "no_suggestion"})
+		return
+	}
+
+	actions := make([]ActionResponse, 0, len(suggestion.Actions))
+	for _, a := range suggestion.Actions {
+		if a.Command == "" {
+			continue
+		}
+		actions = append(actions, ActionResponse{
+			Label:   a.Label,
+			Command: a.Command,
+			Risk:    string(a.Risk),
+		})
+	}
+
+	_ = encoder.Encode(AnalyzeResponse{
+		Type:        "suggestion",
+		Title:       suggestion.Title,
+		Description: suggestion.Description,
+		Actions:     actions,
+	})
+}
+
+func handleAutocomplete(encoder *json.Encoder, req AutocompleteRequest) {
+	if llmClient == nil {
+		_ = encoder.Encode(AutocompleteResponse{Type: "no_completion"})
+		return
+	}
+
+	completion, err := llmClient.Autocomplete(req.PartialCmd, req.Cwd, req.History)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Autocomplete error: %v\n", err)
+		_ = encoder.Encode(AutocompleteResponse{Type: "no_completion"})
+		return
+	}
+
+	if completion == "" {
+		_ = encoder.Encode(AutocompleteResponse{Type: "no_completion"})
+		return
+	}
+
+	_ = encoder.Encode(AutocompleteResponse{
+		Type:       "completion",
+		Completion: completion,
+	})
 }

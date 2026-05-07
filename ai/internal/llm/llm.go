@@ -210,6 +210,143 @@ func (c *Client) analyzeOpenAI(command, errorOutput string) (*analyzer.Suggestio
 	return parseOpenAIResponse(respBody)
 }
 
+const autocompleteSystemPrompt = `You are a shell command autocomplete engine. Return ONLY the completion text to append to the partial command. No explanation, no markdown, no quotes. If you cannot suggest a completion, return an empty string.`
+
+// Autocomplete sends a partial command to the LLM and returns the completion text.
+func (c *Client) Autocomplete(partialCmd, cwd, history string) (string, error) {
+	switch c.provider {
+	case ProviderAnthropic:
+		return c.autocompleteAnthropic(partialCmd, cwd, history)
+	case ProviderOpenAI:
+		return c.autocompleteOpenAI(partialCmd, cwd, history)
+	default:
+		return "", fmt.Errorf("unknown provider: %s", c.provider)
+	}
+}
+
+func (c *Client) autocompleteAnthropic(partialCmd, cwd, history string) (string, error) {
+	userMessage := fmt.Sprintf("Working directory: %s\nRecent commands:\n%s\n\nPartial command: %s", cwd, history, partialCmd)
+
+	reqBody := map[string]interface{}{
+		"model":      anthropicModel,
+		"max_tokens": 100,
+		"system":     autocompleteSystemPrompt,
+		"messages": []map[string]string{
+			{"role": "user", "content": userMessage},
+		},
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", anthropicURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return "", fmt.Errorf("create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", c.apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("api call: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read response: %w", err)
+	}
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("api error %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	return parseAnthropicText(respBody)
+}
+
+func (c *Client) autocompleteOpenAI(partialCmd, cwd, history string) (string, error) {
+	userMessage := fmt.Sprintf("Working directory: %s\nRecent commands:\n%s\n\nPartial command: %s", cwd, history, partialCmd)
+
+	reqBody := map[string]interface{}{
+		"model":      openaiModel,
+		"max_tokens": 100,
+		"temperature": 0,
+		"messages": []map[string]interface{}{
+			{"role": "system", "content": autocompleteSystemPrompt},
+			{"role": "user", "content": userMessage},
+		},
+	}
+
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", openaiURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return "", fmt.Errorf("create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("api call: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read response: %w", err)
+	}
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("api error %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	return parseOpenAIText(respBody)
+}
+
+func parseAnthropicText(body []byte) (string, error) {
+	var apiResp struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(body, &apiResp); err != nil {
+		return "", fmt.Errorf("parse response: %w", err)
+	}
+	for _, block := range apiResp.Content {
+		if block.Type == "text" {
+			return strings.TrimSpace(block.Text), nil
+		}
+	}
+	return "", nil
+}
+
+func parseOpenAIText(body []byte) (string, error) {
+	var apiResp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &apiResp); err != nil {
+		return "", fmt.Errorf("parse response: %w", err)
+	}
+	if len(apiResp.Choices) > 0 {
+		return strings.TrimSpace(apiResp.Choices[0].Message.Content), nil
+	}
+	return "", nil
+}
+
 func parseAnthropicResponse(body []byte) (*analyzer.Suggestion, error) {
 	var apiResp struct {
 		Content []struct {

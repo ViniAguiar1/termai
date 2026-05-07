@@ -30,6 +30,8 @@ pub struct AiSuggestion {
 pub enum AiMessage {
     Suggestion(AiSuggestion),
     NoSuggestion,
+    Completion(String),
+    NoCompletion,
 }
 
 /// IPC client that manages the Go AI engine process and communicates via Unix socket.
@@ -101,6 +103,31 @@ impl AiClient {
             json_escape(command),
             json_escape(output),
             exit_code
+        );
+
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            if let Some(msg) = send_request(stream, &request) {
+                let _ = tx.send(msg);
+            }
+        });
+    }
+
+    /// Send an autocomplete request asynchronously (non-blocking).
+    pub fn autocomplete(&self, partial_cmd: &str, cwd: &str, history: &str) {
+        let stream = match self.stream {
+            Some(ref s) => match s.try_clone() {
+                Ok(s) => s,
+                Err(_) => return,
+            },
+            None => return,
+        };
+
+        let request = format!(
+            "{{\"type\":\"autocomplete\",\"partial_cmd\":{},\"cwd\":{},\"history\":{}}}",
+            json_escape(partial_cmd),
+            json_escape(cwd),
+            json_escape(history)
         );
 
         let tx = self.tx.clone();
@@ -201,28 +228,32 @@ fn parse_response(json: &str) -> Option<AiMessage> {
         return None;
     }
 
-    // Simple JSON parsing without serde dependency
-    // Look for "type" field
     let resp_type = extract_json_string(json, "type")?;
 
-    if resp_type == "no_suggestion" {
-        return Some(AiMessage::NoSuggestion);
+    match resp_type.as_str() {
+        "no_suggestion" => Some(AiMessage::NoSuggestion),
+        "no_completion" => Some(AiMessage::NoCompletion),
+        "completion" => {
+            let completion = extract_json_string(json, "completion").unwrap_or_default();
+            if completion.is_empty() {
+                Some(AiMessage::NoCompletion)
+            } else {
+                Some(AiMessage::Completion(completion))
+            }
+        }
+        "suggestion" => {
+            let title = extract_json_string(json, "title").unwrap_or_default();
+            let description = extract_json_string(json, "description").unwrap_or_default();
+            let actions = extract_actions(json);
+            Some(AiMessage::Suggestion(AiSuggestion {
+                title,
+                description,
+                actions,
+                created: Instant::now(),
+            }))
+        }
+        _ => None,
     }
-
-    if resp_type != "suggestion" {
-        return None;
-    }
-
-    let title = extract_json_string(json, "title").unwrap_or_default();
-    let description = extract_json_string(json, "description").unwrap_or_default();
-    let actions = extract_actions(json);
-
-    Some(AiMessage::Suggestion(AiSuggestion {
-        title,
-        description,
-        actions,
-        created: Instant::now(),
-    }))
 }
 
 fn extract_json_string(json: &str, key: &str) -> Option<String> {

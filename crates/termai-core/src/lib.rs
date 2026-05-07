@@ -205,6 +205,56 @@ impl Terminal {
         trimmed.to_string()
     }
 
+    /// Detect URLs in the visible grid.
+    /// Returns Vec of (row_index, start_col, end_col) where col indices are character positions.
+    pub fn detect_urls(&self) -> Vec<(usize, usize, usize)> {
+        let visible = self.visible_grid();
+        let mut urls = Vec::new();
+        let prefixes = ["https://", "http://", "file://"];
+
+        for (row_idx, row) in visible.iter().enumerate() {
+            let chars: Vec<char> = row.iter().map(|c| c.c).collect();
+            for prefix in &prefixes {
+                let mut search_col = 0usize;
+                while search_col < chars.len() {
+                    // Find prefix starting at search_col
+                    let remaining: String = chars[search_col..].iter().collect();
+                    let byte_pos = match remaining.find(prefix) {
+                        Some(p) => p,
+                        None => break,
+                    };
+                    // Convert byte position to char position
+                    let char_offset = remaining[..byte_pos].chars().count();
+                    let start_col = search_col + char_offset;
+
+                    // Find end of URL by scanning chars
+                    let mut end_col = start_col;
+                    let mut paren_depth: i32 = 0;
+                    for &ch in &chars[start_col..] {
+                        match ch {
+                            ' ' | '\t' | '"' | '\'' | '<' | '>' => break,
+                            '(' => { paren_depth += 1; end_col += 1; }
+                            ')' => {
+                                if paren_depth > 0 {
+                                    paren_depth -= 1;
+                                    end_col += 1;
+                                } else {
+                                    break;
+                                }
+                            }
+                            _ => { end_col += 1; }
+                        }
+                    }
+                    if end_col > start_col + prefix.len() {
+                        urls.push((row_idx, start_col, end_col));
+                    }
+                    search_col = end_col.max(start_col + 1);
+                }
+            }
+        }
+        urls
+    }
+
     /// Search for a query string in scrollback + grid.
     /// Returns matches as (absolute_row, col) where absolute_row 0 is the first scrollback line.
     pub fn search(&self, query: &str) -> Vec<(usize, usize)> {

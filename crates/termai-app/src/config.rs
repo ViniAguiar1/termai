@@ -14,6 +14,9 @@ pub struct Config {
 #[serde(default)]
 pub struct FontConfig {
     pub size: f32,
+    /// Optional font family name (e.g. "JetBrainsMono Nerd Font").
+    /// If not set, uses the embedded JetBrains Mono.
+    pub family: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -53,7 +56,10 @@ impl Default for Config {
 
 impl Default for FontConfig {
     fn default() -> Self {
-        Self { size: 14.0 }
+        Self {
+            size: 14.0,
+            family: None,
+        }
     }
 }
 
