@@ -25,23 +25,29 @@ pub struct GlyphAtlas {
     pub texture_height: u32,
     pub cell_width: f32,
     pub cell_height: f32,
-    glyphs: HashMap<char, GlyphInfo>,
+    /// Cache key is (char, bold) so the same character can have different
+    /// glyphs for the regular and bold weights.
+    glyphs: HashMap<(char, bool), GlyphInfo>,
     /// Packing cursor: next free position in the atlas texture.
     next_x: u32,
     next_y: u32,
     /// Height of the current row of glyphs being packed.
     row_height: u32,
-    /// Font data stored for on-demand rasterization.
+    /// Regular-weight font data, kept for on-demand rasterization.
     font_data: Vec<u8>,
+    /// Optional bold-weight font data. When `None`, requests for bold glyphs
+    /// fall back to the regular font (no synthetic bolding).
+    bold_font_data: Option<Vec<u8>>,
     font_size: f32,
     /// True when texture_data has changed and needs GPU re-upload.
     dirty: bool,
 }
 
 impl GlyphAtlas {
-    /// Build an atlas from embedded font bytes at the given pixel size.
-    /// Pre-populates ASCII 32..127 for fast startup.
-    pub fn new(font_bytes: &[u8], font_size: f32) -> Self {
+    /// Build an atlas from font bytes at the given pixel size, with an optional
+    /// bold weight. Pre-populates ASCII 32..127 (regular) for fast startup;
+    /// bold glyphs are rasterized lazily on first use.
+    pub fn new(font_bytes: &[u8], bold_font_bytes: Option<&[u8]>, font_size: f32) -> Self {
         let font = FontRef::try_from_slice(font_bytes).expect("Failed to parse font");
         let scaled = font.as_scaled(font_size);
 
@@ -97,7 +103,7 @@ impl GlyphAtlas {
                         }
                     });
 
-                    glyphs.insert(ch, GlyphInfo {
+                    glyphs.insert((ch, false), GlyphInfo {
                         uv_x: base_x as f32 / tex_width as f32,
                         uv_y: base_y as f32 / tex_height as f32,
                         uv_w: gw as f32 / tex_width as f32,
@@ -124,24 +130,36 @@ impl GlyphAtlas {
             next_y,
             row_height,
             font_data: font_bytes.to_vec(),
+            bold_font_data: bold_font_bytes.map(|b| b.to_vec()),
             font_size,
             dirty: false,
         }
     }
 
-    /// Get glyph info for a character (immutable). Returns None if not yet rasterized.
+    /// Get glyph info for a regular-weight character. Returns None if not yet rasterized.
     pub fn get(&self, ch: char) -> Option<&GlyphInfo> {
-        self.glyphs.get(&ch)
+        self.glyphs.get(&(ch, false))
     }
 
     /// Get glyph info, rasterizing on demand if needed.
-    pub fn get_or_insert(&mut self, ch: char) -> Option<&GlyphInfo> {
-        if self.glyphs.contains_key(&ch) {
-            return self.glyphs.get(&ch);
+    /// `bold` selects the bold-weight font when one was provided; otherwise
+    /// the regular glyph is returned.
+    pub fn get_or_insert(&mut self, ch: char, bold: bool) -> Option<&GlyphInfo> {
+        // Bold falls back to the regular weight when no bold font was supplied.
+        let weight_key = bold && self.bold_font_data.is_some();
+        let cache_key = (ch, weight_key);
+
+        if self.glyphs.contains_key(&cache_key) {
+            return self.glyphs.get(&cache_key);
         }
 
-        // Rasterize the glyph
-        let font = match FontRef::try_from_slice(&self.font_data) {
+        // Rasterize the glyph from the appropriate font.
+        let bytes: &[u8] = if weight_key {
+            self.bold_font_data.as_deref().unwrap_or(&self.font_data)
+        } else {
+            &self.font_data
+        };
+        let font = match FontRef::try_from_slice(bytes) {
             Ok(f) => f,
             Err(_) => return None,
         };
@@ -209,8 +227,8 @@ impl GlyphAtlas {
 
         self.next_x += slot_w;
         self.dirty = true;
-        self.glyphs.insert(ch, info);
-        self.glyphs.get(&ch)
+        self.glyphs.insert(cache_key, info);
+        self.glyphs.get(&cache_key)
     }
 
     /// Whether the texture data has changed since last GPU upload.

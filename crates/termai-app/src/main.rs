@@ -323,7 +323,7 @@ impl App {
                             underline = false;
                         }
 
-                        RenderCell { ch: cell.c, fg, bg, underline }
+                        RenderCell { ch: cell.c, fg, bg, underline, bold: cell.bold }
                     })
                     .collect()
             })
@@ -353,6 +353,7 @@ impl App {
                 fg: tab_fg,
                 bg: tab_bg,
                 underline: false,
+                bold: false,
             };
             cols as usize
         ];
@@ -371,6 +372,7 @@ impl App {
                     fg: if is_active { active_fg } else { tab_fg },
                     bg: if is_active { active_bg } else { tab_bg },
                     underline: false,
+                    bold: false,
                 };
                 col += 1;
             }
@@ -382,6 +384,7 @@ impl App {
                     fg: sep_fg,
                     bg: tab_bg,
                     underline: false,
+                    bold: false,
                 };
                 col += 1;
             }
@@ -531,7 +534,7 @@ impl App {
         let (cols, _) = renderer.grid_size();
         let bg = self.theme.search_bg();
         let fg = self.theme.search_fg();
-        let mut row = vec![RenderCell { ch: ' ', fg, bg, underline: false }; cols as usize];
+        let mut row = vec![RenderCell { ch: ' ', fg, bg, underline: false, bold: false }; cols as usize];
 
         // "Find: <query>  N/M"
         let count_str = if search.matches.is_empty() {
@@ -644,12 +647,12 @@ impl App {
         let mut rows: Vec<Vec<RenderCell>> = Vec::new();
 
         let make_row = |text: &str, fg: [f32; 4], bg: [f32; 4], cols: usize| -> Vec<RenderCell> {
-            let mut row = vec![RenderCell { ch: ' ', fg, bg, underline: false }; cols];
+            let mut row = vec![RenderCell { ch: ' ', fg, bg, underline: false, bold: false }; cols];
             for (i, ch) in text.chars().enumerate() {
                 if i >= cols {
                     break;
                 }
-                row[i] = RenderCell { ch, fg, bg, underline: false };
+                row[i] = RenderCell { ch, fg, bg, underline: false, bold: false };
             }
             row
         };
@@ -829,7 +832,7 @@ impl ApplicationHandler for App {
 
         self.scale_factor = window.scale_factor() as f32;
 
-        // Resolve the user-configured font (if any) before creating the renderer.
+        // Resolve the user-configured fonts (if any) before creating the renderer.
         // A missing or unmatched family logs a warning and we fall through to
         // the embedded JetBrains Mono.
         let custom_font = self.config.font.normal_family().and_then(|family| {
@@ -848,11 +851,36 @@ impl ApplicationHandler for App {
             }
         });
 
+        // Resolve the bold variant. Prefer an explicit [font.bold] family,
+        // otherwise fall back to the regular family with a Bold style hint —
+        // most "JetBrains Mono"-style families ship a Bold weight that font-kit
+        // will pick up that way.
+        let bold_family = self
+            .config
+            .font
+            .bold
+            .family
+            .as_deref()
+            .or_else(|| self.config.font.normal_family());
+        let bold_style = self
+            .config
+            .font
+            .bold
+            .style
+            .as_deref()
+            .unwrap_or("Bold");
+        let custom_bold_font = bold_family.and_then(|family| {
+            font::load_system_font(family, Some(bold_style)).inspect(|bytes| {
+                log::info!("Loaded bold font '{family}' ({} bytes)", bytes.len());
+            })
+        });
+
         let mut renderer = Renderer::new(
             window.clone(),
             self.scale_factor,
             self.font_size,
             custom_font,
+            custom_bold_font,
         );
         renderer.clear_color = self.theme.bg;
 
@@ -1442,6 +1470,7 @@ impl ApplicationHandler for App {
                                     fg: [0.5, 0.5, 0.5, 0.8],
                                     bg: theme_bg,
                                     underline: false,
+                                    bold: false,
                                 }).collect()
                             ];
                             Some((cursor_x, cursor_y, ghost_cells))

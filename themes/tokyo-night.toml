@@ -1,0 +1,16 @@
+# Tokyo Night — example theme distributable as a standalone file.
+#
+# Drop this file at ~/.config/termai/themes/tokyo-night.toml and add to
+# your main ~/.config/termai/config.toml:
+#
+#     [general]
+#     import = ["~/.config/termai/themes/tokyo-night.toml"]
+#
+# Values in your main config.toml take precedence over anything here, so
+# you can layer a tweak (e.g. a different background) on top of the theme
+# without editing this file.
+
+[theme]
+name = "default"          # Skip the built-in lookup; use the explicit colors below.
+background = "#1a1b26"
+foreground = "#c0caf5"
