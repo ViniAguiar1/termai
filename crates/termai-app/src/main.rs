@@ -1346,24 +1346,28 @@ impl ApplicationHandler for App {
                     && self.ghost_text_debounce.elapsed() > Duration::from_millis(300)
                 {
                     if let Some(pane) = self.find_focused_pane_ref() {
-                        if pane.terminal.cursor_x >= 1 {
-                            let row = &pane.terminal.grid[pane.terminal.cursor_y];
-                            let line: String = row.iter()
-                                .take(pane.terminal.cursor_x)
-                                .map(|c| c.c).collect();
-                            // Strip the leading prompt so we send just what the user typed.
+                        let cx = pane.terminal.cursor_x;
+                        let cy = pane.terminal.cursor_y;
+                        if cx >= 1 && cy < pane.terminal.grid.len() {
+                            let row = &pane.terminal.grid[cy];
+                            let line: String = row.iter().take(cx).map(|c| c.c).collect();
                             let typed = strip_prompt(&line);
                             if !typed.is_empty() {
+                                let typed = typed.to_string();
                                 let cwd = std::env::current_dir()
                                     .map(|p| p.display().to_string())
                                     .unwrap_or_else(|_| ".".to_string());
-                                let history = recent_history(&pane.terminal.grid, pane.terminal.cursor_y, 10);
+                                let history = recent_history(&pane.terminal.grid, cy, 10);
                                 if let Some(ref ai_client) = self.ai_client {
-                                    ai_client.autocomplete(typed, &cwd, &history);
+                                    ai_client.autocomplete(&typed, &cwd, &history);
                                     self.pending_autocomplete = Some(Instant::now());
                                     self.autocomplete_armed = false;
                                 }
+                            } else {
+                                self.autocomplete_armed = false;
                             }
+                        } else {
+                            self.autocomplete_armed = false;
                         }
                     }
                 }

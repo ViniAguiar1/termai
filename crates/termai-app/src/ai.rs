@@ -51,11 +51,13 @@ impl AiClient {
         let ai_binary = find_ai_binary();
 
         let (child, stream) = if let Some(bin) = ai_binary {
-            // Spawn the Go AI engine in serve mode
+            // Spawn the Go AI engine in serve mode. stderr is inherited so the
+            // Go server's startup line ("LLM enabled (provider: ...)") and any
+            // LLM API errors surface in the parent terminal for debugging.
             let child = Command::new(&bin)
                 .args(["serve", "--socket", SOCKET_PATH])
                 .stdout(Stdio::null())
-                .stderr(Stdio::piped())
+                .stderr(Stdio::inherit())
                 .spawn();
 
             match child {
