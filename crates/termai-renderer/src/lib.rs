@@ -5,8 +5,9 @@ use bytemuck::{Pod, Zeroable};
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
-// Embedded monospace font (JetBrains Mono)
-const FONT_BYTES: &[u8] = include_bytes!("../assets/JetBrainsMono-Regular.ttf");
+// Embedded fallback font (JetBrains Mono) used when the user hasn't picked a
+// system font in the config or the requested family can't be found.
+const EMBEDDED_FONT: &[u8] = include_bytes!("../assets/JetBrainsMono-Regular.ttf");
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -46,6 +47,9 @@ pub struct Renderer {
     bind_group: wgpu::BindGroup,
     uniform_buffer: wgpu::Buffer,
     atlas: GlyphAtlas,
+    /// Active font bytes, kept so `rebuild_atlas` (zoom) can re-rasterize
+    /// without re-reading the system font.
+    font_bytes: Vec<u8>,
     width: u32,
     height: u32,
     /// Background clear color (set from theme).
@@ -54,7 +58,15 @@ pub struct Renderer {
 
 impl Renderer {
     /// Create a new renderer attached to the given window.
-    pub fn new(window: Arc<winit::window::Window>, scale_factor: f32, font_size: f32) -> Self {
+    /// `custom_font` lets callers supply a system-loaded font (e.g. resolved
+    /// from `font.family` in the user's config); when `None`, the embedded
+    /// JetBrains Mono is used.
+    pub fn new(
+        window: Arc<winit::window::Window>,
+        scale_factor: f32,
+        font_size: f32,
+        custom_font: Option<Vec<u8>>,
+    ) -> Self {
         let size = window.inner_size();
         let width = size.width.max(1);
         let height = size.height.max(1);
@@ -109,7 +121,8 @@ impl Renderer {
 
         // Build glyph atlas scaled for HiDPI
         let pixel_font_size = font_size * scale_factor;
-        let atlas = GlyphAtlas::new(FONT_BYTES, pixel_font_size);
+        let font_bytes = custom_font.unwrap_or_else(|| EMBEDDED_FONT.to_vec());
+        let atlas = GlyphAtlas::new(&font_bytes, pixel_font_size);
 
         // Upload atlas texture to GPU
         let atlas_texture = device.create_texture_with_data(
@@ -286,6 +299,7 @@ impl Renderer {
             bind_group,
             uniform_buffer,
             atlas,
+            font_bytes,
             width,
             height,
             clear_color: [0.07, 0.07, 0.09, 1.0],
@@ -314,7 +328,7 @@ impl Renderer {
     /// Rebuild the glyph atlas with a new font size (in logical pixels).
     pub fn rebuild_atlas(&mut self, font_size: f32, scale_factor: f32) {
         let pixel_font_size = font_size * scale_factor;
-        self.atlas = GlyphAtlas::new(FONT_BYTES, pixel_font_size);
+        self.atlas = GlyphAtlas::new(&self.font_bytes, pixel_font_size);
 
         let atlas_texture = self.device.create_texture_with_data(
             &self.queue,

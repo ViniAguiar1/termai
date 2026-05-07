@@ -14,9 +14,34 @@ pub struct Config {
 #[serde(default)]
 pub struct FontConfig {
     pub size: f32,
-    /// Optional font family name (e.g. "JetBrainsMono Nerd Font").
-    /// If not set, uses the embedded JetBrains Mono.
+    /// Top-level shortcut: if set, applied to `normal` (and inherited by the
+    /// other variants) when no per-variant family is given. Lets a user write
+    /// `[font] family = "..."` without spelling out every variant.
     pub family: Option<String>,
+    pub normal: FontVariant,
+    pub bold: FontVariant,
+    pub italic: FontVariant,
+    pub bold_italic: FontVariant,
+}
+
+#[derive(Deserialize, Debug, Default, Clone)]
+#[serde(default)]
+pub struct FontVariant {
+    /// Family name passed to the system font matcher (e.g. "JetBrainsMono Nerd Font").
+    pub family: Option<String>,
+    /// Style hint forwarded to the matcher (e.g. "Regular", "Bold", "Italic").
+    pub style: Option<String>,
+}
+
+impl FontConfig {
+    /// Resolve the effective family for the regular weight, falling back from
+    /// `font.normal.family` to the top-level `font.family` shortcut.
+    pub fn normal_family(&self) -> Option<&str> {
+        self.normal
+            .family
+            .as_deref()
+            .or(self.family.as_deref())
+    }
 }
 
 #[derive(Deserialize, Debug)]
@@ -59,6 +84,10 @@ impl Default for FontConfig {
         Self {
             size: 14.0,
             family: None,
+            normal: FontVariant::default(),
+            bold: FontVariant::default(),
+            italic: FontVariant::default(),
+            bold_italic: FontVariant::default(),
         }
     }
 }

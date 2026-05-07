@@ -1,6 +1,7 @@
 mod ai;
 mod colors;
 mod config;
+mod font;
 mod pane;
 mod tab;
 
@@ -827,7 +828,32 @@ impl ApplicationHandler for App {
         );
 
         self.scale_factor = window.scale_factor() as f32;
-        let mut renderer = Renderer::new(window.clone(), self.scale_factor, self.font_size);
+
+        // Resolve the user-configured font (if any) before creating the renderer.
+        // A missing or unmatched family logs a warning and we fall through to
+        // the embedded JetBrains Mono.
+        let custom_font = self.config.font.normal_family().and_then(|family| {
+            let style = self.config.font.normal.style.as_deref();
+            match font::load_system_font(family, style) {
+                Some(bytes) => {
+                    log::info!("Loaded system font '{family}' ({} bytes)", bytes.len());
+                    Some(bytes)
+                }
+                None => {
+                    log::warn!(
+                        "Font family '{family}' not found on the system; falling back to embedded JetBrains Mono"
+                    );
+                    None
+                }
+            }
+        });
+
+        let mut renderer = Renderer::new(
+            window.clone(),
+            self.scale_factor,
+            self.font_size,
+            custom_font,
+        );
         renderer.clear_color = self.theme.bg;
 
         let (cols, rows) = renderer.grid_size();
