@@ -114,6 +114,9 @@ struct App {
     ghost_text: Option<String>,
     ghost_text_debounce: Instant,
     pending_autocomplete: bool,
+    /// True after the user typed and we haven't fired an autocomplete request yet
+    /// for that edit. Reset to true on every keystroke so each pause re-arms one fire.
+    autocomplete_armed: bool,
 }
 
 impl App {
@@ -144,6 +147,7 @@ impl App {
             ghost_text: None,
             ghost_text_debounce: Instant::now(),
             pending_autocomplete: false,
+            autocomplete_armed: false,
         }
     }
 
@@ -771,6 +775,36 @@ fn find_pane_ref(node: &pane::PaneNode, id: u64) -> Option<&pane::Pane> {
     }
 }
 
+/// Strip a shell prompt prefix from a line, returning what the user typed.
+/// Heuristic: cut after the last "$ ", "% ", "> " or "# " (common prompt endings).
+fn strip_prompt(line: &str) -> &str {
+    for marker in ["$ ", "% ", "# ", "> "] {
+        if let Some(idx) = line.rfind(marker) {
+            return line[idx + marker.len()..].trim_start();
+        }
+    }
+    line.trim_start()
+}
+
+/// Pull the last `n` non-empty lines above `cursor_y` as plain strings — used as
+/// LLM context for autocomplete. Trailing whitespace is trimmed per line.
+fn recent_history(grid: &[Vec<termai_core::Cell>], cursor_y: usize, n: usize) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let upper = cursor_y.min(grid.len());
+    for row in grid[..upper].iter().rev() {
+        let line: String = row.iter().map(|c| c.c).collect();
+        let line = line.trim_end().to_string();
+        if !line.is_empty() {
+            out.push(line);
+            if out.len() >= n {
+                break;
+            }
+        }
+    }
+    out.reverse();
+    out.join("\n")
+}
+
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
@@ -1258,6 +1292,7 @@ impl ApplicationHandler for App {
                         // Dismiss AI overlay on new input
                         self.ai_overlay = None;
                         self.ghost_text_debounce = Instant::now();
+                        self.autocomplete_armed = true;
                         pane.write(&bytes);
                     }
                 }
@@ -1291,22 +1326,31 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                // Autocomplete debounce: request after 300ms of idle typing
-                if self.ghost_text.is_none() && !self.pending_autocomplete {
-                    let elapsed = self.ghost_text_debounce.elapsed();
-                    if elapsed > Duration::from_millis(300) && elapsed < Duration::from_millis(500) {
-                        if let Some(pane) = self.find_focused_pane_ref() {
-                            if pane.terminal.cursor_x > 2 {
-                                let row = &pane.terminal.grid[pane.terminal.cursor_y];
-                                let line: String = row.iter()
-                                    .take(pane.terminal.cursor_x)
-                                    .map(|c| c.c).collect();
-                                let line = line.trim().to_string();
-                                if line.len() > 2 {
-                                    if let Some(ref ai_client) = self.ai_client {
-                                        ai_client.autocomplete(&line, ".", "");
-                                        self.pending_autocomplete = true;
-                                    }
+                // Autocomplete: fire once, 300ms after the user stops typing.
+                // `autocomplete_armed` is set on every keystroke and cleared after firing,
+                // so we don't keep hammering the LLM after a NoCompletion.
+                if self.autocomplete_armed
+                    && self.ghost_text.is_none()
+                    && !self.pending_autocomplete
+                    && self.ghost_text_debounce.elapsed() > Duration::from_millis(300)
+                {
+                    if let Some(pane) = self.find_focused_pane_ref() {
+                        if pane.terminal.cursor_x >= 1 {
+                            let row = &pane.terminal.grid[pane.terminal.cursor_y];
+                            let line: String = row.iter()
+                                .take(pane.terminal.cursor_x)
+                                .map(|c| c.c).collect();
+                            // Strip the leading prompt so we send just what the user typed.
+                            let typed = strip_prompt(&line);
+                            if !typed.is_empty() {
+                                let cwd = std::env::current_dir()
+                                    .map(|p| p.display().to_string())
+                                    .unwrap_or_else(|_| ".".to_string());
+                                let history = recent_history(&pane.terminal.grid, pane.terminal.cursor_y, 10);
+                                if let Some(ref ai_client) = self.ai_client {
+                                    ai_client.autocomplete(typed, &cwd, &history);
+                                    self.pending_autocomplete = true;
+                                    self.autocomplete_armed = false;
                                 }
                             }
                         }
