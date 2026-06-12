@@ -1415,6 +1415,9 @@ impl ApplicationHandler for App {
                 if renderer.atlas_needs_reupload() {
                     renderer.reupload_atlas();
                 }
+                if renderer.chrome_atlas_needs_reupload() {
+                    renderer.reupload_chrome_atlas();
+                }
 
                 match renderer.submit_frame(&vertices, &[]) {
                     Ok(_) => {}

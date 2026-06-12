@@ -647,6 +647,64 @@ impl Renderer {
         self.atlas.clear_dirty();
     }
 
+    /// Check if the chrome atlas texture needs to be re-uploaded to the GPU.
+    pub fn chrome_atlas_needs_reupload(&self) -> bool {
+        self.chrome_atlas.is_dirty()
+    }
+
+    /// Re-upload the chrome atlas texture to the GPU after new glyphs were rasterized.
+    pub fn reupload_chrome_atlas(&mut self) {
+        let chrome_atlas_texture = self.device.create_texture_with_data(
+            &self.queue,
+            &wgpu::TextureDescriptor {
+                label: Some("chrome-glyph-atlas"),
+                size: wgpu::Extent3d {
+                    width: self.chrome_atlas.texture_width,
+                    height: self.chrome_atlas.texture_height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            &self.chrome_atlas.texture_data,
+        );
+
+        let chrome_atlas_view = chrome_atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let chrome_atlas_sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        self.chrome_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("chrome-bind-group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&chrome_atlas_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&chrome_atlas_sampler),
+                },
+            ],
+        });
+
+        self.chrome_atlas.clear_dirty();
+    }
+
     /// Render a grid of cells to the screen (single pane, backwards compatible).
     pub fn render(&mut self, cells: &[Vec<RenderCell>]) -> Result<(), wgpu::SurfaceError> {
         let mut vertices: Vec<Vertex> = Vec::new();
