@@ -3,6 +3,8 @@
 //! All colors are normalized RGBA in [0.0, 1.0].
 //! Spacing unit is 4 pixels.
 
+#![allow(dead_code)]
+
 pub const WINDOW_BG: [f32; 4] = rgb(0x0a, 0x0a, 0x0a);
 pub const CHROME_BG: [f32; 4] = rgb(0x1c, 0x1c, 0x1c);
 pub const CHROME_BG_ACTIVE: [f32; 4] = rgb(0x26, 0x26, 0x26);
