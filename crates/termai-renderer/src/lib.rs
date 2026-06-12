@@ -45,6 +45,8 @@ pub struct Renderer {
     bind_group: wgpu::BindGroup,
     uniform_buffer: wgpu::Buffer,
     atlas: GlyphAtlas,
+    chrome_atlas: GlyphAtlas,
+    chrome_bind_group: wgpu::BindGroup,
     width: u32,
     height: u32,
     /// Background clear color (set from theme).
@@ -203,6 +205,58 @@ impl Renderer {
             ],
         });
 
+        // Chrome atlas at smaller font size for UI text (tabs, search bar, AI overlay)
+        let chrome_font_size = 12.0 * scale_factor;
+        let chrome_atlas = GlyphAtlas::new(FONT_BYTES, chrome_font_size);
+
+        let chrome_atlas_texture = device.create_texture_with_data(
+            &queue,
+            &wgpu::TextureDescriptor {
+                label: Some("chrome-glyph-atlas"),
+                size: wgpu::Extent3d {
+                    width: chrome_atlas.texture_width,
+                    height: chrome_atlas.texture_height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            &chrome_atlas.texture_data,
+        );
+
+        let chrome_atlas_view = chrome_atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let chrome_atlas_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        let chrome_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("chrome-bind-group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&chrome_atlas_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&chrome_atlas_sampler),
+                },
+            ],
+        });
+
         // Shader
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("shader"),
@@ -285,6 +339,8 @@ impl Renderer {
             bind_group,
             uniform_buffer,
             atlas,
+            chrome_atlas,
+            chrome_bind_group,
             width,
             height,
             clear_color: [0.07, 0.07, 0.09, 1.0],
@@ -375,6 +431,74 @@ impl Renderer {
     /// Cell dimensions in pixels.
     pub fn cell_size(&self) -> (f32, f32) {
         (self.atlas.cell_width, self.atlas.cell_height)
+    }
+
+    /// Cell dimensions for the chrome (UI) atlas in pixels.
+    pub fn chrome_cell_size(&self) -> (f32, f32) {
+        (self.chrome_atlas.cell_width, self.chrome_atlas.cell_height)
+    }
+
+    /// Draw a free-positioned text run (not aligned to the grid) using the chrome atlas.
+    /// Returns the pixel width consumed by the text.
+    pub fn build_text_run(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        color: [f32; 4],
+        vertices: &mut Vec<Vertex>,
+    ) -> f32 {
+        let (cell_w, _) = self.chrome_cell_size();
+        let mut cursor_x = x;
+
+        for ch in text.chars() {
+            if ch == ' ' {
+                cursor_x += cell_w;
+                continue;
+            }
+            if let Some(glyph) = self.chrome_atlas.get_or_insert(ch) {
+                let glyph = *glyph;
+                let x0 = cursor_x + glyph.offset_x;
+                let y0 = y + glyph.offset_y;
+                let x1 = x0 + glyph.width;
+                let y1 = y0 + glyph.height;
+                push_quad(
+                    vertices,
+                    x0, y0, x1, y1,
+                    [glyph.uv_x, glyph.uv_y],
+                    [glyph.uv_x + glyph.uv_w, glyph.uv_y + glyph.uv_h],
+                    color,
+                    [0.0; 4],
+                    0.0,
+                );
+                cursor_x += cell_w;
+            }
+        }
+
+        cursor_x - x
+    }
+
+    /// Measure the pixel width a text run would consume in the chrome atlas, without drawing it.
+    pub fn measure_chrome_text(&self, text: &str) -> f32 {
+        let cell_w = self.chrome_atlas.cell_width;
+        text.chars().count() as f32 * cell_w
+    }
+
+    /// Build a 1px outline rectangle (4 thin rects).
+    pub fn build_rect_outline(
+        &self,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        thickness: f32,
+        color: [f32; 4],
+        vertices: &mut Vec<Vertex>,
+    ) {
+        self.build_rect(x, y, w, thickness, color, vertices);               // top
+        self.build_rect(x, y + h - thickness, w, thickness, color, vertices); // bottom
+        self.build_rect(x, y, thickness, h, color, vertices);               // left
+        self.build_rect(x + w - thickness, y, thickness, h, color, vertices); // right
     }
 
     /// Grid dimensions that fit the current window.
@@ -527,29 +651,36 @@ impl Renderer {
     pub fn render(&mut self, cells: &[Vec<RenderCell>]) -> Result<(), wgpu::SurfaceError> {
         let mut vertices: Vec<Vertex> = Vec::new();
         self.build_vertices(cells, 0.0, 0.0, &mut vertices);
-        self.submit_frame(&vertices)
+        self.submit_frame(&vertices, &[])
     }
 
     /// Render pre-built vertices to the screen.
-    pub fn submit_frame(&self, vertices: &[Vertex]) -> Result<(), wgpu::SurfaceError> {
+    ///
+    /// `main_vertices` use the main (content) atlas.
+    /// `chrome_vertices` use the chrome atlas.
+    pub fn submit_frame(
+        &self,
+        main_vertices: &[Vertex],
+        chrome_vertices: &[Vertex],
+    ) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
-        let view = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let vertex_buffer = self
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("vertex-buffer"),
-                contents: bytemuck::cast_slice(vertices),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
+        let main_vb = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("main-vertex-buffer"),
+            contents: bytemuck::cast_slice(main_vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
 
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("render-encoder"),
-            });
+        let chrome_vb = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("chrome-vertex-buffer"),
+            contents: bytemuck::cast_slice(chrome_vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("render-encoder"),
+        });
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -572,9 +703,18 @@ impl Renderer {
             });
 
             render_pass.set_pipeline(&self.pipeline);
-            render_pass.set_bind_group(0, &self.bind_group, &[]);
-            render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-            render_pass.draw(0..vertices.len() as u32, 0..1);
+
+            if !main_vertices.is_empty() {
+                render_pass.set_bind_group(0, &self.bind_group, &[]);
+                render_pass.set_vertex_buffer(0, main_vb.slice(..));
+                render_pass.draw(0..main_vertices.len() as u32, 0..1);
+            }
+
+            if !chrome_vertices.is_empty() {
+                render_pass.set_bind_group(0, &self.chrome_bind_group, &[]);
+                render_pass.set_vertex_buffer(0, chrome_vb.slice(..));
+                render_pass.draw(0..chrome_vertices.len() as u32, 0..1);
+            }
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -645,4 +785,16 @@ fn push_quad(
     vertices.push(v(x1, y0, uv_max[0], uv_min[1]));
     vertices.push(v(x1, y1, uv_max[0], uv_max[1]));
     vertices.push(v(x0, y1, uv_min[0], uv_max[1]));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn push_quad_emits_six_vertices() {
+        let mut v: Vec<Vertex> = Vec::new();
+        push_quad(&mut v, 0.0, 0.0, 10.0, 10.0, [0.0; 2], [1.0; 2], [1.0; 4], [0.0; 4], 1.0);
+        assert_eq!(v.len(), 6);
+    }
 }

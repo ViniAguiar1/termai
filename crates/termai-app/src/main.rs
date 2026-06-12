@@ -1416,7 +1416,7 @@ impl ApplicationHandler for App {
                     renderer.reupload_atlas();
                 }
 
-                match renderer.submit_frame(&vertices) {
+                match renderer.submit_frame(&vertices, &[]) {
                     Ok(_) => {}
                     Err(wgpu::SurfaceError::Lost) => {
                         if let Some(ref mut r) = self.renderer {
