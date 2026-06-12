@@ -3,6 +3,7 @@ mod colors;
 mod config;
 mod pane;
 mod tab;
+mod theme;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
