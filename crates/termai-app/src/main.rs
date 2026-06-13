@@ -16,6 +16,9 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
+#[cfg(target_os = "macos")]
+use winit::platform::macos::WindowAttributesExtMacOS;
+
 use termai_core::CursorStyle;
 use termai_renderer::{RenderCell, Renderer, Vertex};
 
@@ -760,12 +763,19 @@ impl ApplicationHandler for App {
             return;
         }
 
-        let attrs = Window::default_attributes()
+        let mut attrs = Window::default_attributes()
             .with_title(&self.config.window.title)
             .with_inner_size(winit::dpi::LogicalSize::new(
                 self.config.window.width,
                 self.config.window.height,
             ));
+
+        #[cfg(target_os = "macos")]
+        {
+            attrs = attrs
+                .with_titlebar_transparent(true)
+                .with_fullsize_content_view(true);
+        }
 
         let window = Arc::new(
             event_loop
