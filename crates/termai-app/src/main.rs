@@ -4,6 +4,7 @@ mod config;
 mod pane;
 mod tab;
 mod theme;
+mod ui;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
