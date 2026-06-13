@@ -1327,7 +1327,7 @@ impl ApplicationHandler for App {
                             let ghost_cells: Vec<Vec<RenderCell>> = vec![
                                 ghost.chars().map(|c| RenderCell {
                                     ch: c,
-                                    fg: [0.5, 0.5, 0.5, 0.8],
+                                    fg: theme::tokens::TEXT_DIM,
                                     bg: theme_bg,
                                 }).collect()
                             ];
