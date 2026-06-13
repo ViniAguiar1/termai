@@ -118,6 +118,8 @@ struct App {
     ghost_text: Option<String>,
     ghost_text_debounce: Instant,
     pending_autocomplete: bool,
+    hovered_tab: Option<usize>,
+    hover_started: Instant,
 }
 
 impl App {
@@ -148,6 +150,8 @@ impl App {
             ghost_text: None,
             ghost_text_debounce: Instant::now(),
             pending_autocomplete: false,
+            hovered_tab: None,
+            hover_started: Instant::now(),
         }
     }
 
@@ -155,12 +159,20 @@ impl App {
         if self.tab_bar.tab_count() <= 1 {
             return 0.0;
         }
-        if let Some(ref renderer) = self.renderer {
-            let (_, ch) = renderer.cell_size();
-            ch + 4.0 // one row + padding
-        } else {
-            0.0
-        }
+        theme::tokens::TAB_STRIP_HEIGHT + theme::tokens::TAB_STRIP_BORDER
+    }
+
+    fn tab_titles(&self) -> Vec<String> {
+        let home = dirs::home_dir();
+        self.tab_bar.tabs.iter().map(|tab| {
+            let cwd = find_pane_ref(&tab.root, tab.focused_pane_id)
+                .and_then(|p| p.terminal.cwd.clone())
+                .or_else(|| std::env::current_dir().ok());
+            match cwd {
+                Some(p) => ui::path_shorten::shorten(p, home.as_deref(), 20),
+                None => tab.title.clone(),
+            }
+        }).collect()
     }
 
     fn search_bar_pixel_height(&self) -> f32 {
@@ -314,94 +326,28 @@ impl App {
             .collect()
     }
 
-    fn build_tab_bar_cells(&self) -> Vec<Vec<RenderCell>> {
-        if self.tab_bar.tab_count() <= 1 {
-            return vec![];
-        }
-
-        let renderer = match self.renderer {
-            Some(ref r) => r,
-            None => return vec![],
-        };
-
-        let (cols, _) = renderer.grid_size();
-        let tab_bg = self.theme.tab_bg();
-        let tab_fg = self.theme.tab_fg();
-        let active_bg = self.theme.tab_active_bg();
-        let active_fg = self.theme.tab_active_fg();
-        let sep_fg = self.theme.tab_separator();
-
-        let mut row = vec![
-            RenderCell {
-                ch: ' ',
-                fg: tab_fg,
-                bg: tab_bg,
-            };
-            cols as usize
-        ];
-
-        let mut col = 0usize;
-        for (i, tab) in self.tab_bar.tabs.iter().enumerate() {
-            let label = format!(" {} {} ", i + 1, tab.title);
-            let is_active = i == self.tab_bar.active;
-
-            for ch in label.chars() {
-                if col >= cols as usize {
-                    break;
-                }
-                row[col] = RenderCell {
-                    ch,
-                    fg: if is_active { active_fg } else { tab_fg },
-                    bg: if is_active { active_bg } else { tab_bg },
-                };
-                col += 1;
-            }
-
-            // Separator
-            if col < cols as usize {
-                row[col] = RenderCell {
-                    ch: '|',
-                    fg: sep_fg,
-                    bg: tab_bg,
-                };
-                col += 1;
-            }
-        }
-
-        vec![row]
-    }
-
     /// Check if a click is in the tab bar and switch tabs if so. Returns true if handled.
     fn handle_tab_bar_click(&mut self, px: f64, py: f64) -> bool {
         let tab_h = self.tab_bar_pixel_height();
         if tab_h == 0.0 {
             return false;
         }
-
         let sy = py as f32 * self.scale_factor;
         if sy >= tab_h {
-            return false; // Click is below tab bar
+            return false;
         }
-
-        // Determine which tab was clicked based on x position
-        let renderer = match self.renderer {
-            Some(ref r) => r,
-            None => return false,
-        };
-        let (cw, _) = renderer.cell_size();
+        let strip_width = self.renderer.as_ref().map(|r| r.width() as f32).unwrap_or(0.0);
+        let tab_layout = ui::tab_bar::layout_tabs(
+            self.tab_bar.tab_count(),
+            strip_width,
+            theme::tokens::TAB_STRIP_HEIGHT,
+            theme::tokens::TRAFFIC_LIGHTS_RESERVE,
+        );
         let sx = px as f32 * self.scale_factor;
-        let click_col = (sx / cw).floor() as usize;
-
-        let mut col = 0usize;
-        for (i, tab) in self.tab_bar.tabs.iter().enumerate() {
-            let label_len = format!(" {} {} ", i + 1, tab.title).len() + 1; // +1 for separator
-            if click_col >= col && click_col < col + label_len {
-                self.tab_bar.switch_to(i);
-                return true;
-            }
-            col += label_len;
+        if let Some(idx) = ui::tab_bar::hit_test(&tab_layout, sx, sy) {
+            self.tab_bar.switch_to(idx);
+            return true;
         }
-
         false
     }
 
@@ -976,6 +922,34 @@ impl ApplicationHandler for App {
                     }
                 }
 
+                // Tab bar hover tracking
+                let new_hover = {
+                    let sx = position.x as f32 * self.scale_factor;
+                    let sy = position.y as f32 * self.scale_factor;
+                    let tab_h = self.tab_bar_pixel_height();
+                    if tab_h > 0.0 && sy < tab_h {
+                        let strip_width = self.renderer.as_ref().map(|r| r.width() as f32).unwrap_or(0.0);
+                        let tab_layout = ui::tab_bar::layout_tabs(
+                            self.tab_bar.tab_count(),
+                            strip_width,
+                            theme::tokens::TAB_STRIP_HEIGHT,
+                            theme::tokens::TRAFFIC_LIGHTS_RESERVE,
+                        );
+                        ui::tab_bar::hit_test(&tab_layout, sx, sy)
+                    } else {
+                        None
+                    }
+                };
+                if new_hover != self.hovered_tab {
+                    self.hovered_tab = new_hover;
+                    if new_hover.is_some() {
+                        self.hover_started = Instant::now();
+                    }
+                    if let Some(ref window) = self.window {
+                        window.request_redraw();
+                    }
+                }
+
                 // Handle click on tab bar (on first move after press)
                 if self.mouse_just_pressed {
                     self.mouse_just_pressed = false;
@@ -1319,7 +1293,18 @@ impl ApplicationHandler for App {
                 }
 
                 // Build all cell data first (before borrowing renderer mutably)
-                let tab_bar_cells = self.build_tab_bar_cells();
+                let titles = self.tab_titles();
+                let tab_layout = if self.tab_bar.tab_count() > 1 {
+                    let strip_width = self.renderer.as_ref().map(|r| r.width() as f32).unwrap_or(0.0);
+                    ui::tab_bar::layout_tabs(
+                        self.tab_bar.tab_count(),
+                        strip_width,
+                        theme::tokens::TAB_STRIP_HEIGHT,
+                        theme::tokens::TRAFFIC_LIGHTS_RESERVE,
+                    )
+                } else {
+                    vec![]
+                };
                 let (cx, cy, cw, ch) = self.content_area();
                 let tab = &self.tab_bar.tabs[self.tab_bar.active];
                 let rects = tab.layout(cx, cy, cw, ch);
@@ -1360,10 +1345,25 @@ impl ApplicationHandler for App {
                 // Now borrow renderer mutably for vertex building
                 let renderer = self.renderer.as_mut().unwrap();
                 let mut vertices: Vec<Vertex> = Vec::new();
+                let mut chrome_vertices: Vec<Vertex> = Vec::new();
 
-                // Tab bar
-                if !tab_bar_cells.is_empty() {
-                    renderer.build_vertices(&tab_bar_cells, 0.0, 0.0, &mut vertices);
+                if !tab_layout.is_empty() {
+                    let hover_progress = if self.hovered_tab.is_some() {
+                        let elapsed = self.hover_started.elapsed().as_millis() as f32;
+                        (elapsed / theme::tokens::HOVER_TRANSITION_MS as f32).min(1.0)
+                    } else {
+                        0.0
+                    };
+                    let strip_width = renderer.width() as f32;
+                    let input = ui::tab_bar::TabBarRenderInput {
+                        tabs: &tab_layout,
+                        active_index: self.tab_bar.active,
+                        hovered_index: self.hovered_tab,
+                        hover_progress,
+                        titles: &titles,
+                        strip_width,
+                    };
+                    ui::tab_bar::render_tab_bar(&input, renderer, &mut vertices, &mut chrome_vertices);
                 }
 
                 // Pane content
@@ -1430,7 +1430,7 @@ impl ApplicationHandler for App {
                     renderer.reupload_chrome_atlas();
                 }
 
-                match renderer.submit_frame(&vertices, &[]) {
+                match renderer.submit_frame(&vertices, &chrome_vertices) {
                     Ok(_) => {}
                     Err(wgpu::SurfaceError::Lost) => {
                         if let Some(ref mut r) = self.renderer {
