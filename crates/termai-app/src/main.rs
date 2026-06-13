@@ -204,7 +204,11 @@ impl App {
             let h = renderer.height() as f32;
             let tab_h = self.tab_bar_pixel_height();
             let search_h = self.search_bar_pixel_height();
-            (0.0, tab_h, w, h - tab_h - search_h)
+            let x = theme::tokens::CONTENT_PADDING_LEFT;
+            let y = tab_h + theme::tokens::CONTENT_PADDING_TOP;
+            let cw = w - x - theme::tokens::CONTENT_PADDING_RIGHT;
+            let ch = h - y - search_h - theme::tokens::CONTENT_PADDING_BOTTOM;
+            (x, y, cw, ch)
         } else {
             (0.0, 0.0, 0.0, 0.0)
         }
