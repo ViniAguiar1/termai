@@ -499,6 +499,5 @@ pub const THEMES: &[&Theme] = &[
 
 /// Look up a built-in theme by name (case-insensitive).
 pub fn theme_by_name(name: &str) -> Option<&'static Theme> {
-    let name_lower = name.to_lowercase();
-    THEMES.iter().find(|t| t.name.to_lowercase() == name_lower).copied()
+    THEMES.iter().find(|t| t.name.eq_ignore_ascii_case(name)).copied()
 }
