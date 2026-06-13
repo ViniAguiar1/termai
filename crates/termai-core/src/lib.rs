@@ -92,6 +92,9 @@ pub struct Terminal {
     saved_attrs: Attrs,
 
     attrs: Attrs,
+
+    /// Working directory reported by the shell via OSC 7. None until first OSC 7 arrives.
+    pub cwd: Option<std::path::PathBuf>,
 }
 
 impl Terminal {
@@ -118,6 +121,7 @@ impl Terminal {
             saved_cursor_y: 0,
             saved_attrs: Attrs::default(),
             attrs: Attrs::default(),
+            cwd: None,
         }
     }
 
@@ -508,7 +512,22 @@ impl Perform for Terminal {
     fn hook(&mut self, _params: &Params, _intermediates: &[u8], _ignore: bool, _action: char) {}
     fn put(&mut self, _byte: u8) {}
     fn unhook(&mut self) {}
-    fn osc_dispatch(&mut self, _params: &[&[u8]], _bell_terminated: bool) {}
+    fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
+        let Some(first) = params.first() else { return };
+        let Ok(code) = std::str::from_utf8(first) else { return };
+        if code != "7" { return; }
+        let Some(uri_bytes) = params.get(1) else { return };
+        let Ok(uri) = std::str::from_utf8(uri_bytes) else { return };
+        // Format: file://hostname/path — strip the scheme and the hostname.
+        let Some(after_scheme) = uri.strip_prefix("file://") else { return };
+        // The first '/' after the hostname starts the actual path.
+        if let Some(slash_idx) = after_scheme.find('/') {
+            let path = &after_scheme[slash_idx..];
+            // Percent-decode common encodings (space, etc.) — basic handling.
+            let decoded = percent_decode(path);
+            self.cwd = Some(std::path::PathBuf::from(decoded));
+        }
+    }
 
     fn csi_dispatch(
         &mut self,
@@ -775,6 +794,82 @@ impl Perform for Terminal {
             _ if intermediates.first() == Some(&b')') => {}
             _ => {}
         }
+    }
+}
+
+/// Minimal percent-decoder for OSC 7 paths. Only handles %XX hex pairs.
+/// Returns the input unchanged if no encoding is present.
+fn percent_decode(s: &str) -> String {
+    if !s.contains('%') {
+        return s.to_string();
+    }
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (
+                from_hex(bytes[i + 1]),
+                from_hex(bytes[i + 2]),
+            ) {
+                out.push((h << 4) | l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn from_hex(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod osc_tests {
+    use super::*;
+
+    #[test]
+    fn osc_7_sets_cwd() {
+        let mut term = Terminal::new(80, 24);
+        let seq = b"\x1b]7;file://host/Users/vini/code\x07";
+        term.feed(seq);
+        assert_eq!(term.cwd.as_deref(), Some(std::path::Path::new("/Users/vini/code")));
+    }
+
+    #[test]
+    fn osc_7_percent_decoding() {
+        let mut term = Terminal::new(80, 24);
+        let seq = b"\x1b]7;file://host/path%20with%20spaces\x07";
+        term.feed(seq);
+        assert_eq!(
+            term.cwd.as_deref(),
+            Some(std::path::Path::new("/path with spaces"))
+        );
+    }
+
+    #[test]
+    fn osc_7_ignored_without_file_scheme() {
+        let mut term = Terminal::new(80, 24);
+        let seq = b"\x1b]7;not-a-uri\x07";
+        term.feed(seq);
+        assert_eq!(term.cwd, None);
+    }
+
+    #[test]
+    fn other_osc_codes_do_not_affect_cwd() {
+        let mut term = Terminal::new(80, 24);
+        // OSC 0 = window title — must NOT set cwd
+        let seq = b"\x1b]0;some title\x07";
+        term.feed(seq);
+        assert_eq!(term.cwd, None);
     }
 }
 
