@@ -1400,6 +1400,24 @@ impl ApplicationHandler for App {
                     renderer.build_vertices(cells, rect.x, rect.y, &mut vertices);
                 }
 
+                // Outline cursor for unfocused panes.
+                for rect in &rects {
+                    if rect.id == focused_id {
+                        continue;
+                    }
+                    let pane = match find_pane_ref(&tab.root, rect.id) {
+                        Some(p) => p,
+                        None => continue,
+                    };
+                    if !pane.terminal.cursor_visible || pane.terminal.scroll_offset != 0 {
+                        continue;
+                    }
+                    let (cw_px, ch_px) = renderer.cell_size();
+                    let cx_pos = rect.x + pane.terminal.cursor_x as f32 * cw_px;
+                    let cy_pos = rect.y + pane.terminal.cursor_y as f32 * ch_px;
+                    renderer.build_rect_outline(cx_pos, cy_pos, cw_px, ch_px, 1.0, self.theme.cursor, &mut vertices);
+                }
+
                 // Dividers between panes
                 if rects.len() > 1 {
                     for i in 0..rects.len() {
