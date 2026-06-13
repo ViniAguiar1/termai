@@ -143,28 +143,28 @@ const fn hex(r: u8, g: u8, b: u8) -> [f32; 4] {
 // ---------------------------------------------------------------------------
 
 pub const DEFAULT: Theme = Theme {
-    name: "default",
-    bg: hex(0x12, 0x12, 0x16),
-    fg: hex(0xCC, 0xCC, 0xCE),
-    cursor: hex(0xCC, 0xCC, 0xCE),
-    selection: hex(0x44, 0x44, 0x55),
+    name: "termAI Dark",
+    bg: hex(0x0a, 0x0a, 0x0a),
+    fg: hex(0xe6, 0xe6, 0xe6),
+    cursor: hex(0xc4, 0x4d, 0xff),
+    selection: [0xc4 as f32 / 255.0, 0x4d as f32 / 255.0, 0xff as f32 / 255.0, 0.25],
     ansi: [
-        hex(0x1A, 0x1A, 0x1E), // 0: black
-        hex(0xCC, 0x38, 0x38), // 1: red
-        hex(0x5C, 0xB8, 0x5C), // 2: green
-        hex(0xCC, 0xAE, 0x47), // 3: yellow
-        hex(0x5C, 0x80, 0xD1), // 4: blue
-        hex(0xAE, 0x66, 0xB8), // 5: magenta
-        hex(0x57, 0xB3, 0xB8), // 6: cyan
-        hex(0xB8, 0xB8, 0xBD), // 7: white
-        hex(0x66, 0x66, 0x6B), // 8: bright black
-        hex(0xEB, 0x5C, 0x5C), // 9: bright red
-        hex(0x7A, 0xDB, 0x7A), // 10: bright green
-        hex(0xF0, 0xD1, 0x66), // 11: bright yellow
-        hex(0x80, 0xA3, 0xF0), // 12: bright blue
-        hex(0xD1, 0x8A, 0xDB), // 13: bright magenta
-        hex(0x7A, 0xD6, 0xDB), // 14: bright cyan
-        hex(0xEB, 0xEB, 0xF0), // 15: bright white
+        hex(0x0a, 0x0a, 0x0a), // 0: black
+        hex(0xff, 0x5c, 0x57), // 1: red
+        hex(0x5a, 0xf7, 0x8e), // 2: green
+        hex(0xf3, 0xf9, 0x9d), // 3: yellow
+        hex(0x57, 0xc7, 0xff), // 4: blue
+        hex(0xc4, 0x4d, 0xff), // 5: magenta (matches accent)
+        hex(0x9a, 0xed, 0xfe), // 6: cyan
+        hex(0xe6, 0xe6, 0xe6), // 7: white
+        hex(0x33, 0x33, 0x33), // 8: bright black
+        hex(0xff, 0x7c, 0x77), // 9: bright red
+        hex(0x7a, 0xff, 0xae), // 10: bright green
+        hex(0xff, 0xff, 0xbd), // 11: bright yellow
+        hex(0x77, 0xe7, 0xff), // 12: bright blue
+        hex(0xe4, 0x6d, 0xff), // 13: bright magenta
+        hex(0xba, 0xff, 0xff), // 14: bright cyan
+        hex(0xff, 0xff, 0xff), // 15: bright white
     ],
 };
 
@@ -500,5 +500,5 @@ pub const THEMES: &[&Theme] = &[
 /// Look up a built-in theme by name (case-insensitive).
 pub fn theme_by_name(name: &str) -> Option<&'static Theme> {
     let name_lower = name.to_lowercase();
-    THEMES.iter().find(|t| t.name == name_lower).copied()
+    THEMES.iter().find(|t| t.name.to_lowercase() == name_lower).copied()
 }
