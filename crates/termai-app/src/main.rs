@@ -1364,6 +1364,17 @@ impl ApplicationHandler for App {
                         strip_width,
                     };
                     ui::tab_bar::render_tab_bar(&input, renderer, &mut vertices, &mut chrome_vertices);
+
+                    if self.tab_bar.tab_count() > 1 {
+                        // Hardcoded Disconnected for now; Task 18 will wire real state.
+                        ui::connection_indicator::render(
+                            ui::connection_indicator::State::Disconnected,
+                            renderer.width() as f32,
+                            0.0,
+                            renderer,
+                            &mut vertices,
+                        );
+                    }
                 }
 
                 // Pane content
