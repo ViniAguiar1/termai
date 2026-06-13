@@ -162,6 +162,17 @@ impl App {
         theme::tokens::TAB_STRIP_HEIGHT + theme::tokens::TAB_STRIP_BORDER
     }
 
+    /// Smooth fade opacity for the cursor, sine-cycling between CURSOR_FADE_MIN and 1.0.
+    fn cursor_opacity(&self) -> f32 {
+        let elapsed = self.cursor_blink_start.elapsed().as_millis();
+        let phase = (elapsed % theme::tokens::CURSOR_BLINK_MS) as f32
+            / theme::tokens::CURSOR_BLINK_MS as f32;
+        // sine wave: 0 → 1 → 0 → -1 → 0 across phase 0..1
+        // Map to opacity range [CURSOR_FADE_MIN, 1.0]
+        let s = ((phase * std::f32::consts::TAU).sin() * 0.5) + 0.5; // 0..1
+        theme::tokens::CURSOR_FADE_MIN + (1.0 - theme::tokens::CURSOR_FADE_MIN) * s
+    }
+
     fn tab_titles(&self) -> Vec<String> {
         let home = dirs::home_dir();
         self.tab_bar.tabs.iter().map(|tab| {
@@ -229,10 +240,10 @@ impl App {
         is_focused: bool,
     ) -> Vec<Vec<RenderCell>> {
         let visible = pane.terminal.visible_grid();
-        let cursor_on = is_focused
+        let cursor_shown = is_focused
             && pane.terminal.cursor_visible
-            && pane.terminal.scroll_offset == 0
-            && (self.cursor_blink_start.elapsed().as_millis() / theme::tokens::CURSOR_BLINK_MS) % 2 == 0;
+            && pane.terminal.scroll_offset == 0;
+        let cursor_alpha = if cursor_shown { self.cursor_opacity() } else { 0.0 };
 
         let sel = if is_focused {
             self.selection.as_ref().map(|s| s.normalized())
@@ -304,17 +315,21 @@ impl App {
                             }
                         }
 
-                        if cursor_on
+                        if cursor_shown
                             && row_idx == pane.terminal.cursor_y
                             && col_idx == pane.terminal.cursor_x
                         {
                             match pane.terminal.cursor_style {
                                 CursorStyle::Block => {
                                     fg = self.theme.bg;
-                                    bg = self.theme.cursor;
+                                    let mut c = self.theme.cursor;
+                                    c[3] = cursor_alpha;
+                                    bg = c;
                                 }
                                 CursorStyle::Underline | CursorStyle::Bar => {
-                                    bg = self.theme.cursor_bar();
+                                    let mut c = self.theme.cursor_bar();
+                                    c[3] = cursor_alpha;
+                                    bg = c;
                                 }
                             }
                         }
