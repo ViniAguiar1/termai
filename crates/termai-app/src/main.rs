@@ -245,12 +245,6 @@ impl App {
             && pane.terminal.scroll_offset == 0;
         let cursor_alpha = if cursor_shown { self.cursor_opacity() } else { 0.0 };
 
-        let sel = if is_focused {
-            self.selection.as_ref().map(|s| s.normalized())
-        } else {
-            None
-        };
-
         // Build set of search-highlighted cells for this pane
         let search_highlight: Option<&SearchState> = if is_focused {
             self.search.as_ref().filter(|s| !s.query.is_empty())
@@ -270,21 +264,6 @@ impl App {
 
                         if cell.inverse {
                             std::mem::swap(&mut fg, &mut bg);
-                        }
-
-                        if let Some((sc, sr, ec, er)) = sel {
-                            let in_sel = if sr == er {
-                                row_idx == sr && col_idx >= sc && col_idx < ec
-                            } else if row_idx == sr {
-                                col_idx >= sc
-                            } else if row_idx == er {
-                                col_idx < ec
-                            } else {
-                                row_idx > sr && row_idx < er
-                            };
-                            if in_sel {
-                                std::mem::swap(&mut fg, &mut bg);
-                            }
                         }
 
                         // Search highlighting
@@ -1357,6 +1336,17 @@ impl ApplicationHandler for App {
                     } else { None }
                 } else { None };
 
+                // Pre-compute selection geometry before mutably borrowing renderer
+                // (sx, sy, ex, ey, pane_cols) for the translucent overlay
+                let sel_data: Option<(usize, usize, usize, usize, usize)> =
+                    self.selection.as_ref().and_then(|sel_obj| {
+                        let (sx, sy, ex, ey) = sel_obj.normalized();
+                        let pane_cols = find_pane_ref(&tab.root, focused_id)
+                            .map(|p| p.terminal.cols)
+                            .unwrap_or(80);
+                        Some((sx, sy, ex, ey, pane_cols))
+                    });
+
                 // Now borrow renderer mutably for vertex building
                 let renderer = self.renderer.as_mut().unwrap();
                 let mut vertices: Vec<Vertex> = Vec::new();
@@ -1451,6 +1441,58 @@ impl ApplicationHandler for App {
                         theme::tokens::ACCENT,
                         &mut vertices,
                     );
+                }
+
+                // Selection overlay (alpha 25% accent)
+                if let Some((sx, sy, ex, ey, pane_cols)) = sel_data {
+                    if let Some(rect) = rects.iter().find(|r| r.id == focused_id) {
+                        let (cw_px, ch_px) = renderer.cell_size();
+                        let sel_color = theme::tokens::with_alpha(
+                            theme::tokens::ACCENT,
+                            theme::tokens::SELECTION_ALPHA,
+                        );
+                        if sy == ey {
+                            let w = ((ex.saturating_sub(sx)) as f32).max(1.0) * cw_px;
+                            renderer.build_rect(
+                                rect.x + sx as f32 * cw_px,
+                                rect.y + sy as f32 * ch_px,
+                                w,
+                                ch_px,
+                                sel_color,
+                                &mut vertices,
+                            );
+                        } else {
+                            // First row: from sx to end of pane width
+                            renderer.build_rect(
+                                rect.x + sx as f32 * cw_px,
+                                rect.y + sy as f32 * ch_px,
+                                (pane_cols - sx) as f32 * cw_px,
+                                ch_px,
+                                sel_color,
+                                &mut vertices,
+                            );
+                            // Middle rows: full pane width
+                            for row in (sy + 1)..ey {
+                                renderer.build_rect(
+                                    rect.x,
+                                    rect.y + row as f32 * ch_px,
+                                    pane_cols as f32 * cw_px,
+                                    ch_px,
+                                    sel_color,
+                                    &mut vertices,
+                                );
+                            }
+                            // Last row: from 0 to ex
+                            renderer.build_rect(
+                                rect.x,
+                                rect.y + ey as f32 * ch_px,
+                                ex as f32 * cw_px,
+                                ch_px,
+                                sel_color,
+                                &mut vertices,
+                            );
+                        }
+                    }
                 }
 
                 // Ghost text (autocomplete)
