@@ -439,8 +439,9 @@ impl Renderer {
     }
 
     /// Draw a free-positioned text run (not aligned to the grid) using the chrome atlas.
+    /// Glyphs are rasterized from and drawn with `self.chrome_atlas`.
     /// Returns the pixel width consumed by the text.
-    pub fn build_text_run(
+    pub fn build_chrome_text_run(
         &mut self,
         text: &str,
         x: f32,
@@ -471,8 +472,8 @@ impl Renderer {
                     [0.0; 4],
                     0.0,
                 );
-                cursor_x += cell_w;
             }
+            cursor_x += cell_w;
         }
 
         cursor_x - x
@@ -484,7 +485,7 @@ impl Renderer {
         text.chars().count() as f32 * cell_w
     }
 
-    /// Build a 1px outline rectangle (4 thin rects).
+    /// Build an outline rectangle of configurable thickness (4 thin rects).
     pub fn build_rect_outline(
         &self,
         x: f32,
