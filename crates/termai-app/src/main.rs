@@ -1440,6 +1440,19 @@ impl ApplicationHandler for App {
                     }
                 }
 
+                // Focused pane border (above dividers, below overlays)
+                if let Some(rect) = rects.iter().find(|r| r.id == focused_id) {
+                    renderer.build_rect_outline(
+                        rect.x,
+                        rect.y,
+                        rect.w,
+                        rect.h,
+                        1.0,
+                        theme::tokens::ACCENT,
+                        &mut vertices,
+                    );
+                }
+
                 // Ghost text (autocomplete)
                 if let Some((cursor_x, cursor_y, ref ghost_cells)) = ghost_data {
                     if let Some(rect) = rects.iter().find(|r| r.id == focused_id) {
