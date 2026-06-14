@@ -15,7 +15,12 @@ import (
 
 const (
 	anthropicURL   = "https://api.anthropic.com/v1/messages"
-	anthropicModel = "claude-sonnet-4-20250514"
+	// Sonnet 4.6 — best speed/intelligence balance, used for error analysis.
+	// (The old claude-sonnet-4-20250514 was retired → 404.)
+	anthropicModel = "claude-sonnet-4-6"
+	// Haiku 4.5 — fastest model, used for autocomplete where latency matters
+	// most (ghost text should feel near-instant).
+	anthropicFastModel = "claude-haiku-4-5"
 
 	openaiURL   = "https://api.openai.com/v1/chat/completions"
 	openaiModel = "gpt-4o-mini"
@@ -239,7 +244,7 @@ func (c *Client) autocompleteAnthropic(partialCmd, cwd, history string) (string,
 	userMessage := fmt.Sprintf("Working directory: %s\nRecent commands:\n%s\n\nPartial command: %s", cwd, history, partialCmd)
 
 	reqBody := map[string]interface{}{
-		"model":      anthropicModel,
+		"model":      anthropicFastModel,
 		"max_tokens": 100,
 		"system":     autocompleteSystemPrompt,
 		"messages": []map[string]string{
