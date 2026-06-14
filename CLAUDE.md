@@ -35,9 +35,9 @@ cd ai && go build -ldflags "-X github.com/ViniAguiar1/termai/ai/cmd.appVersion=v
 
 A workspace of 4 crates:
 
-- **`termai-app`** — Main binary: window creation (winit), event loop, orchestrates all other crates
+- **`termai-app`** — Main binary: window creation (winit), event loop, orchestrates all other crates. Contains `ui/` (tab bar, search bar, AI overlay, connection indicator) and `theme/` (design tokens) modules
 - **`termai-core`** — VT100/xterm state machine using the `vte` crate. Maintains a grid of `Cell`s with cursor position. Implements `vte::Perform` for escape sequence handling
-- **`termai-renderer`** — GPU text rendering via `wgpu` (placeholder, to be implemented)
+- **`termai-renderer`** — GPU text rendering via `wgpu`. Implements a content atlas (14pt) for terminal text and a chrome atlas (12pt) for UI text
 - **`termai-pty`** — Cross-platform PTY management using `portable-pty`. Spawns shell, provides read/write interface
 
 ### Go — AI Engine (`ai/`)
@@ -57,12 +57,15 @@ Communication protocol between Rust emulator and Go AI engine (to be defined).
 
 ## Key Design Decisions
 
-- Terminal rendering will use wgpu for GPU-accelerated text (glyph atlas approach)
+- Terminal rendering uses wgpu for GPU-accelerated text (glyph atlas approach)
 - PTY is cross-platform via `portable-pty` (Unix pty + Windows ConPTY)
 - VT parser uses the `vte` crate (zero-copy, state-machine based)
 - Go AI engine is rule-based for now, will integrate LLM APIs for complex errors
 - UI text in the AI engine is in Portuguese (Brazilian)
 - Actions have `Risk` levels (low/medium/high) that gate confirmation prompts
+- UI chrome (tabs, search bar, AI overlay) renders as wgpu shapes + free-positioned text via a second glyph atlas — NOT as cells in the terminal grid
+- Design system is centralized in `crates/termai-app/src/theme/tokens.rs` — single source of truth for colors, spacing, and animation constants
+- Visual language is dark-first minimal with a single magenta accent (`#c44dff`)
 
 ## CI
 
