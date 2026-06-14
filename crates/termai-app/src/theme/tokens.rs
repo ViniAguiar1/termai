@@ -6,9 +6,12 @@
 #![allow(dead_code)]
 
 pub const WINDOW_BG: [f32; 4] = rgb(0x0a, 0x0a, 0x0a);
-pub const CHROME_BG: [f32; 4] = rgb(0x1c, 0x1c, 0x1c);
-pub const CHROME_BG_ACTIVE: [f32; 4] = rgb(0x26, 0x26, 0x26);
-pub const CHROME_BORDER: [f32; 4] = rgb(0x2e, 0x2e, 0x2e);
+// Chrome BG matches WINDOW_BG so the strip blends with the content (no
+// visible gray bar). The active tab still differentiates via CHROME_BG_ACTIVE
+// and the magenta accent line.
+pub const CHROME_BG: [f32; 4] = rgb(0x0a, 0x0a, 0x0a);
+pub const CHROME_BG_ACTIVE: [f32; 4] = rgb(0x1c, 0x1c, 0x1c);
+pub const CHROME_BORDER: [f32; 4] = rgb(0x1c, 0x1c, 0x1c);
 pub const TEXT_PRIMARY: [f32; 4] = rgb(0xe6, 0xe6, 0xe6);
 pub const TEXT_MUTED: [f32; 4] = rgb(0x8a, 0x8a, 0x8a);
 pub const TEXT_DIM: [f32; 4] = rgb(0x5a, 0x5a, 0x5a);
