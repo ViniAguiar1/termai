@@ -7,6 +7,7 @@ pub struct Theme {
     pub bg: [f32; 4],
     pub fg: [f32; 4],
     pub cursor: [f32; 4],
+    #[allow(dead_code)] // kept for theme schema even though selection now uses ACCENT token
     pub selection: [f32; 4],
     /// Standard 16 ANSI colors (0-7 normal, 8-15 bright).
     pub ansi: [[f32; 4]; 16],

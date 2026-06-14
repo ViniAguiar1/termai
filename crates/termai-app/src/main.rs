@@ -344,7 +344,6 @@ impl App {
     }
 
     fn copy_selection(&mut self) {
-        let tab = &self.tab_bar.tabs[self.tab_bar.active];
         if let Some(ref sel) = self.selection {
             let (sc, sr, ec, er) = sel.normalized();
             // Find focused pane and extract text
@@ -909,7 +908,7 @@ impl ApplicationHandler for App {
                         }
                         // Split vertical: Cmd+D
                         Key::Character(c) if c.as_str() == "d" && !is_shift => {
-                            let (cx, cy, cw, ch) = self.content_area();
+                            let (_, _, cw, ch) = self.content_area();
                             if let Some(ref renderer) = self.renderer {
                                 let (cols, rows) = renderer.grid_size_for(cw / 2.0, ch);
                                 self.tab_bar.active_tab().split(
@@ -923,7 +922,7 @@ impl ApplicationHandler for App {
                         }
                         // Split horizontal: Cmd+Shift+D
                         Key::Character(c) if (c.as_str() == "d" || c.as_str() == "D") && is_shift => {
-                            let (cx, cy, cw, ch) = self.content_area();
+                            let (_, _, cw, ch) = self.content_area();
                             if let Some(ref renderer) = self.renderer {
                                 let (cols, rows) = renderer.grid_size_for(cw, ch / 2.0);
                                 self.tab_bar.active_tab().split(
