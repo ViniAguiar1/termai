@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use config::Config;
 
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
@@ -316,6 +316,21 @@ impl App {
         if let Some(pane) = tab.root.find_pane(id) {
             pane.write(bytes);
         }
+    }
+
+    /// Write real user input (typed key or IME-committed text) to the focused
+    /// pane, resetting the transient UI: clear selection, dismiss the AI overlay,
+    /// and re-arm autocomplete. Done only for actual input so bare modifiers
+    /// (e.g. Cmd before Cmd+C) don't wipe a selection.
+    fn write_input(&mut self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        self.selection = None;
+        self.ai_overlay = None;
+        self.ghost_text_debounce = Instant::now();
+        self.autocomplete_armed = true;
+        self.write_to_focused(bytes);
     }
 
     fn build_pane_cells(
@@ -753,6 +768,10 @@ impl ApplicationHandler for App {
                 .create_window(attrs)
                 .expect("Failed to create window"),
         );
+
+        // Enable IME so dead keys / composition (e.g. " ' ~ ^ ` on the ABNT and
+        // other layouts) produce characters via Ime::Commit instead of being lost.
+        window.set_ime_allowed(true);
 
         self.scale_factor = window.scale_factor() as f32;
         let mut renderer = Renderer::new(window.clone(), self.scale_factor, self.font_size);
@@ -1338,21 +1357,21 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                // Send key to focused pane
-                let tab = self.tab_bar.active_tab();
-                let id = tab.focused_pane_id;
-                if let Some(pane) = tab.root.find_pane(id) {
-                    let ctrl = self.modifiers.control_key() && !self.modifiers.super_key();
-                    let bytes = key_to_bytes(&event.logical_key, &event.text, ctrl);
-                    if !bytes.is_empty() {
-                        // Real input: clear any selection, dismiss AI overlay.
-                        // (Done here rather than for every key event so modifier
-                        // presses like Cmd don't wipe the selection before Cmd+C.)
-                        self.selection = None;
-                        self.ai_overlay = None;
-                        self.ghost_text_debounce = Instant::now();
-                        self.autocomplete_armed = true;
-                        pane.write(&bytes);
+                // Send key to focused pane. Plain text is delivered via IME
+                // (Ime::Commit) instead; here key_to_bytes only yields bytes for
+                // Named keys and Ctrl combos (event.text is None under IME).
+                let ctrl = self.modifiers.control_key() && !self.modifiers.super_key();
+                let bytes = key_to_bytes(&event.logical_key, &event.text, ctrl);
+                self.write_input(&bytes);
+            }
+
+            WindowEvent::Ime(ime) => {
+                // Composed/dead-key text (and most regular text when IME is on)
+                // arrives here.
+                if let Ime::Commit(text) = ime {
+                    self.write_input(text.as_bytes());
+                    if let Some(ref window) = self.window {
+                        window.request_redraw();
                     }
                 }
             }
