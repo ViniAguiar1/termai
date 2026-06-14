@@ -16,6 +16,8 @@ pub const TEXT_PRIMARY: [f32; 4] = rgb(0xe6, 0xe6, 0xe6);
 pub const TEXT_MUTED: [f32; 4] = rgb(0x8a, 0x8a, 0x8a);
 pub const TEXT_DIM: [f32; 4] = rgb(0x5a, 0x5a, 0x5a);
 pub const ACCENT: [f32; 4] = rgb(0xc4, 0x4d, 0xff);
+/// Amber, for warning states (e.g. the AI engine is up but the LLM is failing).
+pub const WARN: [f32; 4] = rgb(0xf0, 0xa8, 0x30);
 
 pub const UNIT: f32 = 4.0;
 

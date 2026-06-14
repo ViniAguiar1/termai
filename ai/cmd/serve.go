@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/ViniAguiar1/termai/ai/internal/analyzer"
@@ -44,6 +45,26 @@ type AutocompleteRequest struct {
 type AutocompleteResponse struct {
 	Type       string `json:"type"`
 	Completion string `json:"completion,omitempty"`
+	// LLMError reports why the LLM was unavailable: "no_key", "quota", "auth",
+	// or "error". Empty when the LLM is healthy.
+	LLMError string `json:"llm_error,omitempty"`
+}
+
+// classifyLLMError maps a provider error into a short, stable kind the UI can
+// act on without parsing provider-specific messages.
+func classifyLLMError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "quota") || strings.Contains(msg, "insufficient_quota") || strings.Contains(msg, "billing"):
+		return "quota"
+	case strings.Contains(msg, "401") || strings.Contains(msg, "invalid_api_key") || strings.Contains(msg, "unauthorized") || strings.Contains(msg, "authentication"):
+		return "auth"
+	default:
+		return "error"
+	}
 }
 
 // ActionResponse is a single suggested action.
@@ -59,6 +80,7 @@ type AnalyzeResponse struct {
 	Title       string           `json:"title"`
 	Description string           `json:"description"`
 	Actions     []ActionResponse `json:"actions"`
+	LLMError    string           `json:"llm_error,omitempty"`
 }
 
 var serveCmd = &cobra.Command{
@@ -178,14 +200,18 @@ func handleConnection(conn net.Conn) {
 func handleAnalyze(encoder *json.Encoder, req AnalyzeRequest) {
 	errorOutput := req.Output
 	var suggestion *analyzer.Suggestion
+	llmErr := ""
 
 	if llmClient != nil {
 		llmSuggestion, err := llmClient.Analyze(req.Command, errorOutput)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "LLM error: %v\n", err)
+			llmErr = classifyLLMError(err)
 		} else {
 			suggestion = llmSuggestion
 		}
+	} else {
+		llmErr = "no_key"
 	}
 
 	if suggestion == nil {
@@ -193,7 +219,7 @@ func handleAnalyze(encoder *json.Encoder, req AnalyzeRequest) {
 	}
 
 	if suggestion == nil {
-		_ = encoder.Encode(AnalyzeResponse{Type: "no_suggestion"})
+		_ = encoder.Encode(AnalyzeResponse{Type: "no_suggestion", LLMError: llmErr})
 		return
 	}
 
@@ -214,19 +240,23 @@ func handleAnalyze(encoder *json.Encoder, req AnalyzeRequest) {
 		Title:       suggestion.Title,
 		Description: suggestion.Description,
 		Actions:     actions,
+		LLMError:    llmErr,
 	})
 }
 
 func handleAutocomplete(encoder *json.Encoder, req AutocompleteRequest) {
 	if llmClient == nil {
-		_ = encoder.Encode(AutocompleteResponse{Type: "no_completion"})
+		_ = encoder.Encode(AutocompleteResponse{Type: "no_completion", LLMError: "no_key"})
 		return
 	}
 
 	completion, err := llmClient.Autocomplete(req.PartialCmd, req.Cwd, req.History)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Autocomplete error: %v\n", err)
-		_ = encoder.Encode(AutocompleteResponse{Type: "no_completion"})
+		_ = encoder.Encode(AutocompleteResponse{
+			Type:     "no_completion",
+			LLMError: classifyLLMError(err),
+		})
 		return
 	}
 

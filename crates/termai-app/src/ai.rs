@@ -2,7 +2,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -46,6 +46,11 @@ pub struct AiClient {
     pub rx: mpsc::Receiver<AiMessage>,
     tx: mpsc::Sender<AiMessage>,
     analyzing: Arc<AtomicBool>,
+    /// Whether the LLM is currently usable. False once a request comes back with
+    /// an `llm_error` (no key / quota / auth / error).
+    llm_ok: Arc<AtomicBool>,
+    /// Reason the LLM is unavailable ("quota", "auth", "no_key", "error").
+    llm_reason: Arc<Mutex<String>>,
 }
 
 impl AiClient {
@@ -94,7 +99,19 @@ impl AiClient {
             rx,
             tx,
             analyzing: Arc::new(AtomicBool::new(false)),
+            llm_ok: Arc::new(AtomicBool::new(true)),
+            llm_reason: Arc::new(Mutex::new(String::new())),
         }
+    }
+
+    /// Whether the AI engine's LLM is usable (false on no-key/quota/auth/error).
+    pub fn llm_available(&self) -> bool {
+        self.llm_ok.load(Ordering::Relaxed)
+    }
+
+    /// Reason the LLM is unavailable (empty when available).
+    pub fn llm_reason(&self) -> String {
+        self.llm_reason.lock().map(|r| r.clone()).unwrap_or_default()
     }
 
     /// Send an analysis request asynchronously (non-blocking).
@@ -122,12 +139,15 @@ impl AiClient {
 
         let tx = self.tx.clone();
         let analyzing = self.analyzing.clone();
+        let llm_ok = self.llm_ok.clone();
+        let llm_reason = self.llm_reason.clone();
         analyzing.store(true, Ordering::Relaxed);
         thread::spawn(move || {
             // Always send something back so the caller can clear its pending flag,
             // even when the IPC fails (timeout, connection dropped, etc).
-            let msg = send_request(stream, &request).unwrap_or(AiMessage::NoSuggestion);
+            let (msg, le) = send_request(stream, &request).unwrap_or((AiMessage::NoSuggestion, None));
             analyzing.store(false, Ordering::Relaxed);
+            apply_llm_state(&llm_ok, &llm_reason, &le);
             let _ = tx.send(msg);
         });
     }
@@ -156,8 +176,11 @@ impl AiClient {
         );
 
         let tx = self.tx.clone();
+        let llm_ok = self.llm_ok.clone();
+        let llm_reason = self.llm_reason.clone();
         thread::spawn(move || {
-            let msg = send_request(stream, &request).unwrap_or(AiMessage::NoCompletion);
+            let (msg, le) = send_request(stream, &request).unwrap_or((AiMessage::NoCompletion, None));
+            apply_llm_state(&llm_ok, &llm_reason, &le);
             let _ = tx.send(msg);
         });
     }
@@ -178,7 +201,8 @@ impl AiClient {
         );
         let tx = self.tx.clone();
         thread::spawn(move || {
-            let msg = send_request(stream, &request).unwrap_or(AiMessage::NoUpdate);
+            // Update check carries no LLM state — ignore the llm_error slot.
+            let (msg, _) = send_request(stream, &request).unwrap_or((AiMessage::NoUpdate, None));
             let _ = tx.send(msg);
         });
     }
@@ -257,7 +281,9 @@ fn wait_for_socket(path: &str, timeout: Duration) -> Option<UnixStream> {
     }
 }
 
-fn send_request(mut stream: UnixStream, request: &str) -> Option<AiMessage> {
+/// Send a request and return the parsed message plus any `llm_error` the engine
+/// reported (Some("quota"/"auth"/"no_key"/"error") when the LLM is unavailable).
+fn send_request(mut stream: UnixStream, request: &str) -> Option<(AiMessage, Option<String>)> {
     // Send request with newline delimiter
     if stream.write_all(request.as_bytes()).is_err() {
         return None;
@@ -274,7 +300,22 @@ fn send_request(mut stream: UnixStream, request: &str) -> Option<AiMessage> {
         return None;
     }
 
-    parse_response(&line)
+    let llm_error = extract_json_string(&line, "llm_error").filter(|s| !s.is_empty());
+    let msg = parse_response(&line)?;
+    Some((msg, llm_error))
+}
+
+/// Update the shared LLM-health flag from a response's `llm_error`.
+fn apply_llm_state(ok: &AtomicBool, reason: &Mutex<String>, llm_error: &Option<String>) {
+    match llm_error {
+        Some(e) => {
+            ok.store(false, Ordering::Relaxed);
+            if let Ok(mut r) = reason.lock() {
+                *r = e.clone();
+            }
+        }
+        None => ok.store(true, Ordering::Relaxed),
+    }
 }
 
 fn parse_response(json: &str) -> Option<AiMessage> {

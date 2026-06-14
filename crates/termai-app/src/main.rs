@@ -137,6 +137,8 @@ struct App {
     last_top_click: Instant,
     /// Whether we've already fired the one-shot startup update check.
     update_checked: bool,
+    /// Tracks LLM availability so we notify the user once when it drops.
+    llm_was_available: bool,
 }
 
 impl App {
@@ -175,6 +177,7 @@ impl App {
             hovered_divider: None,
             last_top_click: Instant::now(),
             update_checked: false,
+            llm_was_available: true,
         }
     }
 
@@ -1339,7 +1342,8 @@ impl ApplicationHandler for App {
                 let tab = self.tab_bar.active_tab();
                 let id = tab.focused_pane_id;
                 if let Some(pane) = tab.root.find_pane(id) {
-                    let bytes = key_to_bytes(&event.logical_key, &event.text);
+                    let ctrl = self.modifiers.control_key() && !self.modifiers.super_key();
+                    let bytes = key_to_bytes(&event.logical_key, &event.text, ctrl);
                     if !bytes.is_empty() {
                         // Real input: clear any selection, dismiss AI overlay.
                         // (Done here rather than for every key event so modifier
@@ -1404,6 +1408,28 @@ impl ApplicationHandler for App {
                             ai::AiMessage::NoUpdate => {}
                         }
                     }
+                }
+
+                // Notify once when the LLM becomes unavailable (no key / quota /
+                // auth / error) so the silent "nothing happens" is explained.
+                if let Some(ref ai_client) = self.ai_client {
+                    let available = ai_client.llm_available();
+                    if !available && self.llm_was_available {
+                        let reason = ai_client.llm_reason();
+                        let msg = match reason.as_str() {
+                            "no_key" => "Nenhuma chave de API configurada em ~/.config/termai/config.toml.",
+                            "quota" => "Cota da API excedida — verifique os créditos/billing do provedor.",
+                            "auth" => "Chave de API inválida — confira ~/.config/termai/config.toml.",
+                            _ => "Erro ao contatar o provedor de IA.",
+                        };
+                        self.ai_overlay = Some(ai::AiSuggestion {
+                            title: "IA indisponível".to_string(),
+                            description: msg.to_string(),
+                            actions: Vec::new(),
+                            created: Instant::now(),
+                        });
+                    }
+                    self.llm_was_available = available;
                 }
 
                 // Autocomplete: fire once, 300ms after the user stops typing.
@@ -1563,6 +1589,9 @@ impl ApplicationHandler for App {
                     {
                         let state = match self.ai_client.as_ref() {
                             Some(c) if c.is_analyzing() => ui::connection_indicator::State::Analyzing,
+                            Some(c) if c.is_connected() && !c.llm_available() => {
+                                ui::connection_indicator::State::Unavailable
+                            }
                             Some(c) if c.is_connected() => ui::connection_indicator::State::Connected,
                             _ => ui::connection_indicator::State::Disconnected,
                         };
@@ -1828,8 +1857,41 @@ impl ApplicationHandler for App {
     }
 }
 
-fn key_to_bytes(key: &Key, text: &Option<winit::keyboard::SmolStr>) -> Vec<u8> {
+/// Map a Ctrl+<char> combo to its control byte (Ctrl+C → 0x03, etc.).
+/// Returns None for characters that have no control mapping.
+fn ctrl_byte(s: &str) -> Option<u8> {
+    let mut chars = s.chars();
+    let c = chars.next()?;
+    if chars.next().is_some() {
+        return None; // more than one char
+    }
+    match c {
+        'a'..='z' => Some(c as u8 - b'a' + 1), // 0x01..=0x1a
+        'A'..='Z' => Some(c as u8 - b'A' + 1),
+        '@' | ' ' => Some(0x00),
+        '[' => Some(0x1b),
+        '\\' => Some(0x1c),
+        ']' => Some(0x1d),
+        '^' => Some(0x1e),
+        '_' | '/' => Some(0x1f),
+        '?' => Some(0x7f),
+        _ => None,
+    }
+}
+
+fn key_to_bytes(key: &Key, text: &Option<winit::keyboard::SmolStr>, ctrl: bool) -> Vec<u8> {
     match key {
+        Key::Character(c) if ctrl => {
+            // Ctrl+<char> → control byte (e.g. Ctrl+C = SIGINT). Use the logical
+            // character, not `text`, since macOS may not deliver text with Ctrl.
+            if let Some(b) = ctrl_byte(c.as_str()) {
+                return vec![b];
+            }
+            match text {
+                Some(t) => t.as_bytes().to_vec(),
+                None => c.as_bytes().to_vec(),
+            }
+        }
         Key::Named(named) => match named {
             NamedKey::Enter => vec![b'\r'],
             NamedKey::Backspace => vec![0x7f],
@@ -1856,6 +1918,23 @@ fn key_to_bytes(key: &Key, text: &Option<winit::keyboard::SmolStr>) -> Vec<u8> {
             }
         }
         _ => vec![],
+    }
+}
+
+#[cfg(test)]
+mod ctrl_tests {
+    use super::ctrl_byte;
+
+    #[test]
+    fn maps_ctrl_combos() {
+        assert_eq!(ctrl_byte("c"), Some(0x03)); // SIGINT
+        assert_eq!(ctrl_byte("C"), Some(0x03));
+        assert_eq!(ctrl_byte("d"), Some(0x04)); // EOF
+        assert_eq!(ctrl_byte("z"), Some(0x1a)); // SIGTSTP
+        assert_eq!(ctrl_byte("a"), Some(0x01));
+        assert_eq!(ctrl_byte("["), Some(0x1b)); // ESC
+        assert_eq!(ctrl_byte("ab"), None);
+        assert_eq!(ctrl_byte("1"), None);
     }
 }
 

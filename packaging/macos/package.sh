@@ -65,7 +65,9 @@ cat > "$APP_DIR/Contents/MacOS/termai-launcher" << 'LAUNCHER'
 DIR="$(cd "$(dirname "$0")" && pwd)"
 export PATH="$DIR:$PATH"
 
-# Pass through user's shell environment for API keys
+# The AI engine reads its API key from ~/.config/termai/config.toml (preferred)
+# or from ANTHROPIC_API_KEY / OPENAI_API_KEY. Source the shell rc as a fallback
+# for users who export the key there.
 if [ -f "$HOME/.zshrc" ]; then
     source "$HOME/.zshrc" 2>/dev/null || true
 elif [ -f "$HOME/.bashrc" ]; then

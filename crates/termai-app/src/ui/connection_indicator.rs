@@ -8,6 +8,8 @@ pub enum State {
     Disconnected,
     Connected,
     Analyzing,
+    /// Engine is connected but the LLM is unavailable (no key / quota / error).
+    Unavailable,
 }
 
 /// Render the indicator. `pulse_t` is 0.0..1.0 — only used by `Analyzing`.
@@ -31,6 +33,9 @@ pub fn render(
         }
         State::Disconnected => {
             renderer.build_rect_outline(x, y, size, size, 1.0, tokens::TEXT_DIM, vertices);
+        }
+        State::Unavailable => {
+            renderer.build_rect(x, y, size, size, tokens::WARN, vertices);
         }
         State::Analyzing => {
             let alpha = tokens::CURSOR_FADE_MIN + (1.0 - tokens::CURSOR_FADE_MIN) * pulse_t;
