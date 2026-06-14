@@ -1,64 +1,40 @@
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <!-- Matte dark-green terminal body -->
-    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0"   stop-color="#2c4a3c"/>
-      <stop offset="0.55" stop-color="#1a2f27"/>
-      <stop offset="1"   stop-color="#0e1a15"/>
+    <!-- Dark terminal body (brand: near-black) -->
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1b1d20"/>
+      <stop offset="0.55" stop-color="#101113"/>
+      <stop offset="1" stop-color="#0a0a0a"/>
     </linearGradient>
-    <!-- Inner screen, slightly inset and darker -->
-    <linearGradient id="screen" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#16261f"/>
-      <stop offset="1" stop-color="#0a120e"/>
-    </linearGradient>
-    <!-- Eye sheen -->
-    <radialGradient id="eye" cx="0.38" cy="0.30" r="0.85">
-      <stop offset="0"   stop-color="#ffffff"/>
-      <stop offset="0.7" stop-color="#e9f6ee"/>
-      <stop offset="1"   stop-color="#bcd6c6"/>
-    </radialGradient>
-    <!-- Magenta brand glow -->
-    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
-      <feGaussianBlur stdDeviation="14" result="b"/>
-      <feMerge>
-        <feMergeNode in="b"/>
-        <feMergeNode in="SourceGraphic"/>
-      </feMerge>
-    </filter>
-    <!-- Top gloss -->
     <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0"    stop-color="#ffffff" stop-opacity="0.10"/>
-      <stop offset="0.35" stop-color="#ffffff" stop-opacity="0.0"/>
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.08"/>
+      <stop offset="0.4" stop-color="#ffffff" stop-opacity="0"/>
     </linearGradient>
+    <!-- Magenta brand accent -->
+    <linearGradient id="mag" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#d56bff"/>
+      <stop offset="1" stop-color="#b23dff"/>
+    </linearGradient>
+    <filter id="glow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="14" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
   </defs>
 
-  <!-- macOS squircle body (824x824 centered, r≈185) -->
-  <rect x="100" y="100" width="824" height="824" rx="185" ry="185" fill="url(#body)"/>
-  <!-- subtle inner rim -->
-  <rect x="100" y="100" width="824" height="824" rx="185" ry="185" fill="none"
-        stroke="#3a5e4d" stroke-opacity="0.5" stroke-width="3"/>
-  <!-- top gloss overlay -->
+  <!-- macOS squircle (824 centered, r≈185) -->
+  <rect x="100" y="100" width="824" height="824" rx="185" ry="185" fill="url(#bg)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" ry="185" fill="none" stroke="#2c2f34" stroke-width="3"/>
   <rect x="100" y="100" width="824" height="824" rx="185" ry="185" fill="url(#gloss)"/>
 
-  <!-- inner screen panel -->
-  <rect x="206" y="232" width="612" height="476" rx="64" ry="64" fill="url(#screen)"/>
-  <rect x="206" y="232" width="612" height="476" rx="64" ry="64" fill="none"
-        stroke="#000000" stroke-opacity="0.35" stroke-width="2"/>
+  <!-- Terminal prompt chevron -->
+  <path d="M372 392 L500 512 L372 632" fill="none" stroke="#f0f0f0"
+        stroke-width="58" stroke-linecap="round" stroke-linejoin="round"/>
 
-  <!-- mascot eyes -->
-  <g>
-    <rect x="356" y="356" width="96" height="150" rx="48" ry="48" fill="url(#eye)"/>
-    <rect x="572" y="356" width="96" height="150" rx="48" ry="48" fill="url(#eye)"/>
-    <!-- pupils -->
-    <circle cx="404" cy="446" r="30" fill="#0c1712"/>
-    <circle cx="620" cy="446" r="30" fill="#0c1712"/>
-    <!-- catchlights -->
-    <circle cx="394" cy="434" r="9" fill="#ffffff" fill-opacity="0.9"/>
-    <circle cx="610" cy="434" r="9" fill="#ffffff" fill-opacity="0.9"/>
-  </g>
-
-  <!-- magenta brand cursor (blinking underscore) -->
-  <g filter="url(#glow)">
-    <rect x="436" y="588" width="152" height="34" rx="10" ry="10" fill="#c44dff"/>
+  <!-- AI sparkles (brand magenta): a large one + a small one -->
+  <g filter="url(#glow)" fill="url(#mag)">
+    <path transform="translate(556,392) scale(1.55)"
+          d="M50,0 C54,28 72,46 100,50 C72,54 54,72 50,100 C46,72 28,54 0,50 C28,46 46,28 50,0 Z"/>
+    <path transform="translate(648,560) scale(0.7)"
+          d="M50,0 C54,28 72,46 100,50 C72,54 54,72 50,100 C46,72 28,54 0,50 C28,46 46,28 50,0 Z"/>
   </g>
 </svg>
