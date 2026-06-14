@@ -29,6 +29,8 @@ use tab::TabBar;
 const MIN_FONT_SIZE: f32 = 10.0;
 const MAX_FONT_SIZE: f32 = 60.0;
 const ZOOM_STEP: f32 = 2.0;
+/// How long the tmux-style leader stays armed waiting for a command key.
+const LEADER_TIMEOUT_MS: u128 = 1500;
 
 struct Selection {
     start_col: usize,
@@ -124,6 +126,13 @@ struct App {
     autocomplete_armed: bool,
     hovered_tab: Option<usize>,
     hover_started: Instant,
+    /// `Some(t)` while the tmux-style leader (Ctrl+B) has been pressed and we're
+    /// waiting for the command key. `t` is when it was armed (for the timeout).
+    leader_armed: Option<Instant>,
+    /// Split id whose divider is currently being dragged, if any.
+    dragging_divider: Option<u64>,
+    /// Split id whose divider the mouse is hovering (for highlight + cursor icon).
+    hovered_divider: Option<u64>,
 }
 
 impl App {
@@ -157,6 +166,9 @@ impl App {
             autocomplete_armed: false,
             hovered_tab: None,
             hover_started: Instant::now(),
+            leader_armed: None,
+            dragging_divider: None,
+            hovered_divider: None,
         }
     }
 
@@ -228,6 +240,11 @@ impl App {
         }
     }
 
+    /// Pixel gap reserved between sibling panes (physical pixels).
+    fn gutter_px(&self) -> f32 {
+        theme::tokens::PANE_GUTTER * self.scale_factor
+    }
+
     fn pixel_to_cell_in_pane(&self, px: f64, py: f64, rect: &PaneRect) -> (usize, usize) {
         if let Some(ref renderer) = self.renderer {
             let (cw, ch) = renderer.cell_size();
@@ -247,12 +264,49 @@ impl App {
     fn find_pane_at(&self, px: f64, py: f64) -> Option<PaneRect> {
         let (cx, cy, cw, ch) = self.content_area();
         let rects = self.tab_bar.tabs[self.tab_bar.active]
-            .layout(cx, cy, cw, ch);
+            .layout(cx, cy, cw, ch, self.gutter_px());
         let sx = px as f32;
         let sy = py as f32;
         rects.into_iter().find(|r| {
             sx >= r.x && sx < r.x + r.w && sy >= r.y && sy < r.y + r.h
         })
+    }
+
+    /// Return the divider under the given physical-pixel position (with grab slop).
+    fn find_divider_at(&self, px: f64, py: f64) -> Option<pane::DividerRect> {
+        let (cx, cy, cw, ch) = self.content_area();
+        let dividers = self.tab_bar.tabs[self.tab_bar.active]
+            .root
+            .dividers(cx, cy, cw, ch, self.gutter_px());
+        let slop = theme::tokens::DIVIDER_GRAB_SLOP * self.scale_factor;
+        let sx = px as f32;
+        let sy = py as f32;
+        dividers.into_iter().find(|d| {
+            sx >= d.x - slop && sx < d.x + d.w + slop && sy >= d.y - slop && sy < d.y + d.h + slop
+        })
+    }
+
+    /// Split the focused pane in the given direction (shared by Cmd+D and the leader).
+    fn split_focused(&mut self, dir: SplitDir) {
+        let (_, _, cw, ch) = self.content_area();
+        if let Some(ref renderer) = self.renderer {
+            let (w, h) = match dir {
+                SplitDir::Vertical => (cw / 2.0, ch),
+                SplitDir::Horizontal => (cw, ch / 2.0),
+            };
+            let (cols, rows) = renderer.grid_size_for(w, h);
+            self.tab_bar.active_tab().split(dir, cols as usize, rows as usize);
+        }
+        self.resize_panes();
+    }
+
+    /// Write bytes to the focused pane's PTY.
+    fn write_to_focused(&mut self, bytes: &[u8]) {
+        let tab = self.tab_bar.active_tab();
+        let id = tab.focused_pane_id;
+        if let Some(pane) = tab.root.find_pane(id) {
+            pane.write(bytes);
+        }
     }
 
     fn build_pane_cells(
@@ -330,7 +384,10 @@ impl App {
         if self.tab_bar.tab_count() <= 1 {
             return false;
         }
-        let sy = py as f32 * self.scale_factor;
+        // winit reports CursorMoved.position in PHYSICAL pixels, so mouse_pos is
+        // already physical — do NOT multiply by scale_factor again (the token
+        // sizes below are the ones that need the scale applied).
+        let sy = py as f32;
         let s = self.scale_factor;
         let strip_h = theme::tokens::TAB_STRIP_HEIGHT * s;
         if sy >= strip_h {
@@ -344,7 +401,7 @@ impl App {
             theme::tokens::TRAFFIC_LIGHTS_RESERVE * s,
             s,
         );
-        let sx = px as f32 * self.scale_factor;
+        let sx = px as f32;
         if let Some(idx) = ui::tab_bar::hit_test(&tab_layout, sx, sy) {
             self.tab_bar.switch_to(idx);
             if let Some(ref window) = self.window {
@@ -360,8 +417,9 @@ impl App {
         if let Some(ref renderer) = self.renderer {
             let (cx, cy, cw, ch) = self.content_area();
             let (cell_w, cell_h) = renderer.cell_size();
+            let gutter = theme::tokens::PANE_GUTTER * self.scale_factor;
             let tab = self.tab_bar.active_tab();
-            let rects = tab.root.layout(cx, cy, cw, ch);
+            let rects = tab.root.layout(cx, cy, cw, ch, gutter);
             tab.root.resize_all(&rects, cell_w, cell_h);
         }
     }
@@ -587,6 +645,25 @@ fn find_word_bounds(line: &[char], col: usize) -> (usize, usize) {
     (start, end)
 }
 
+/// Decode the embedded PNG into a winit window icon (non-macOS platforms).
+#[cfg(not(target_os = "macos"))]
+fn load_window_icon() -> Option<winit::window::Icon> {
+    let bytes = include_bytes!("../assets/icon.png");
+    let decoder = png::Decoder::new(std::io::Cursor::new(&bytes[..]));
+    let mut reader = decoder.read_info().ok()?;
+    let mut buf = vec![0u8; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buf).ok()?;
+    let rgba = match info.color_type {
+        png::ColorType::Rgba => buf[..info.buffer_size()].to_vec(),
+        png::ColorType::Rgb => buf[..info.buffer_size()]
+            .chunks_exact(3)
+            .flat_map(|p| [p[0], p[1], p[2], 255])
+            .collect(),
+        _ => return None,
+    };
+    winit::window::Icon::from_rgba(rgba, info.width, info.height).ok()
+}
+
 fn find_pane_ref(node: &pane::PaneNode, id: u64) -> Option<&pane::Pane> {
     match node {
         pane::PaneNode::Leaf(pane) => {
@@ -653,6 +730,15 @@ impl ApplicationHandler for App {
                 .with_fullsize_content_view(true);
         }
 
+        // The macOS Dock icon comes from the .icns in the .app bundle (winit's
+        // window icon is a no-op there); set it at runtime on other platforms.
+        #[cfg(not(target_os = "macos"))]
+        {
+            if let Some(icon) = load_window_icon() {
+                attrs = attrs.with_window_icon(Some(icon));
+            }
+        }
+
         let window = Arc::new(
             event_loop
                 .create_window(attrs)
@@ -717,6 +803,14 @@ impl ApplicationHandler for App {
                         ElementState::Pressed => {
                             // Try tab bar click with current mouse pos
                             if self.handle_tab_bar_click(self.mouse_pos.0, self.mouse_pos.1) {
+                                return;
+                            }
+
+                            // Start dragging a pane divider if the press landed on one.
+                            if let Some(div) = self.find_divider_at(self.mouse_pos.0, self.mouse_pos.1) {
+                                self.dragging_divider = Some(div.split_id);
+                                self.mouse_pressed = true;
+                                self.selection = None;
                                 return;
                             }
 
@@ -825,6 +919,7 @@ impl ApplicationHandler for App {
                         }
                         ElementState::Released => {
                             self.mouse_pressed = false;
+                            self.dragging_divider = None;
                         }
                     }
                 }
@@ -832,6 +927,55 @@ impl ApplicationHandler for App {
 
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse_pos = (position.x, position.y);
+
+                // Dragging a divider: update its split ratio and re-layout.
+                if let Some(split_id) = self.dragging_divider {
+                    if let Some(div) = self
+                        .find_divider_at(position.x, position.y)
+                        .filter(|d| d.split_id == split_id)
+                        .or_else(|| {
+                            // Mouse may have moved off the (thin) strip mid-drag; recover
+                            // this split's container geometry from the full divider list.
+                            let (cx, cy, cw, ch) = self.content_area();
+                            self.tab_bar.tabs[self.tab_bar.active]
+                                .root
+                                .dividers(cx, cy, cw, ch, self.gutter_px())
+                                .into_iter()
+                                .find(|d| d.split_id == split_id)
+                        })
+                    {
+                        let ratio = match div.dir {
+                            SplitDir::Vertical => {
+                                (position.x as f32 - div.cont_x) / div.cont_w.max(1.0)
+                            }
+                            SplitDir::Horizontal => {
+                                (position.y as f32 - div.cont_y) / div.cont_h.max(1.0)
+                            }
+                        };
+                        self.tab_bar.active_tab().root.set_ratio(split_id, ratio);
+                        self.resize_panes();
+                        if let Some(ref window) = self.window {
+                            window.request_redraw();
+                        }
+                    }
+                    return;
+                }
+
+                // Divider hover: highlight + resize cursor.
+                let new_div_hover = self.find_divider_at(position.x, position.y);
+                let new_div_id = new_div_hover.as_ref().map(|d| d.split_id);
+                if new_div_id != self.hovered_divider {
+                    self.hovered_divider = new_div_id;
+                    if let Some(ref window) = self.window {
+                        let icon = match new_div_hover.as_ref().map(|d| d.dir) {
+                            Some(SplitDir::Vertical) => winit::window::CursorIcon::ColResize,
+                            Some(SplitDir::Horizontal) => winit::window::CursorIcon::RowResize,
+                            None => winit::window::CursorIcon::Default,
+                        };
+                        window.set_cursor(icon);
+                        window.request_redraw();
+                    }
+                }
 
                 // URL hover detection when Cmd is held
                 self.hovered_url = None;
@@ -853,8 +997,9 @@ impl ApplicationHandler for App {
 
                 // Tab bar hover tracking (only when 2+ tabs)
                 let new_hover = if self.tab_bar.tab_count() > 1 {
-                    let sx = position.x as f32 * self.scale_factor;
-                    let sy = position.y as f32 * self.scale_factor;
+                    // position is already in physical pixels (see handle_tab_bar_click).
+                    let sx = position.x as f32;
+                    let sy = position.y as f32;
                     let s = self.scale_factor;
                     let strip_h = theme::tokens::TAB_STRIP_HEIGHT * s;
                     if sy < strip_h {
@@ -918,6 +1063,42 @@ impl ApplicationHandler for App {
 
                 self.cursor_blink_start = Instant::now();
 
+                // tmux-style split leader (default Ctrl+B): leader, then `|` for a
+                // vertical split or `-` for a horizontal one.
+                if let Some(armed_at) = self.leader_armed.take() {
+                    let expired = armed_at.elapsed().as_millis() > LEADER_TIMEOUT_MS;
+                    if !expired {
+                        if let Key::Character(c) = &event.logical_key {
+                            match c.as_str() {
+                                "|" => {
+                                    self.split_focused(SplitDir::Vertical);
+                                    return;
+                                }
+                                "-" => {
+                                    self.split_focused(SplitDir::Horizontal);
+                                    return;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    // Not a split command (or timed out): replay the swallowed leader
+                    // byte to the shell, then let this key fall through normally.
+                    let leader_byte = self.config.keys.leader_byte();
+                    self.write_to_focused(&[leader_byte]);
+                }
+                // Arm the leader on Ctrl+<leader char> (and swallow that keystroke).
+                if self.modifiers.control_key() && !self.modifiers.super_key() {
+                    if let Key::Character(c) = &event.logical_key {
+                        if c.as_str().chars().next().map(|ch| ch.to_ascii_lowercase())
+                            == Some(self.config.keys.leader_char())
+                        {
+                            self.leader_armed = Some(Instant::now());
+                            return;
+                        }
+                    }
+                }
+
                 // AI overlay interaction: number keys to execute, Escape to dismiss
                 if self.ai_overlay.is_some() {
                     match &event.logical_key {
@@ -970,32 +1151,14 @@ impl ApplicationHandler for App {
                             self.zoom();
                             return;
                         }
-                        // Split vertical: Cmd+D
+                        // Split vertical: Cmd+D (alias for the leader's `|`)
                         Key::Character(c) if c.as_str() == "d" && !is_shift => {
-                            let (_, _, cw, ch) = self.content_area();
-                            if let Some(ref renderer) = self.renderer {
-                                let (cols, rows) = renderer.grid_size_for(cw / 2.0, ch);
-                                self.tab_bar.active_tab().split(
-                                    SplitDir::Vertical,
-                                    cols as usize,
-                                    rows as usize,
-                                );
-                            }
-                            self.resize_panes();
+                            self.split_focused(SplitDir::Vertical);
                             return;
                         }
-                        // Split horizontal: Cmd+Shift+D
+                        // Split horizontal: Cmd+Shift+D (alias for the leader's `-`)
                         Key::Character(c) if (c.as_str() == "d" || c.as_str() == "D") && is_shift => {
-                            let (_, _, cw, ch) = self.content_area();
-                            if let Some(ref renderer) = self.renderer {
-                                let (cols, rows) = renderer.grid_size_for(cw, ch / 2.0);
-                                self.tab_bar.active_tab().split(
-                                    SplitDir::Horizontal,
-                                    cols as usize,
-                                    rows as usize,
-                                );
-                            }
-                            self.resize_panes();
+                            self.split_focused(SplitDir::Horizontal);
                             return;
                         }
                         // New tab: Cmd+T
@@ -1265,11 +1428,14 @@ impl ApplicationHandler for App {
                     vec![]
                 };
                 let (cx, cy, cw, ch) = self.content_area();
+                let gutter_px = theme::tokens::PANE_GUTTER * self.scale_factor;
                 let tab = &self.tab_bar.tabs[self.tab_bar.active];
-                let rects = tab.layout(cx, cy, cw, ch);
+                let rects = tab.layout(cx, cy, cw, ch, gutter_px);
+                let dividers = tab.root.dividers(cx, cy, cw, ch, gutter_px);
                 let focused_id = tab.focused_pane_id;
                 let theme_bg = self.theme.bg;
-                let div_color = self.theme.divider();
+                let hovered_divider = self.hovered_divider;
+                let dragging_divider = self.dragging_divider;
 
                 let mut pane_cells: Vec<(PaneRect, Vec<Vec<RenderCell>>)> = Vec::new();
                 for rect in &rects {
@@ -1408,41 +1574,32 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                // Dividers between panes
+                // Dim inactive panes so the focused one reads clearly (multi-pane only).
                 if rects.len() > 1 {
-                    for i in 0..rects.len() {
-                        for j in (i + 1)..rects.len() {
-                            let a = &rects[i];
-                            let b = &rects[j];
-                            if (a.x + a.w - b.x).abs() < 2.0 {
-                                let div_x = a.x + a.w;
-                                let div_y = a.y.min(b.y);
-                                let div_h = a.h.max(b.h);
-                                renderer.build_divider(div_x, div_y, 1.0, div_h, div_color, &mut vertices);
-                            }
-                            if (a.y + a.h - b.y).abs() < 2.0 {
-                                let div_x = a.x.min(b.x);
-                                let div_y = a.y + a.h;
-                                let div_w = a.w.max(b.w);
-                                renderer.build_divider(div_x, div_y, div_w, 1.0, div_color, &mut vertices);
-                            }
+                    for rect in &rects {
+                        if rect.id != focused_id {
+                            renderer.build_rect(
+                                rect.x,
+                                rect.y,
+                                rect.w,
+                                rect.h,
+                                theme::tokens::INACTIVE_PANE_DIM,
+                                &mut vertices,
+                            );
                         }
                     }
                 }
 
-                // Focused pane border — only meaningful when there are multiple panes.
-                if rects.len() > 1 {
-                    if let Some(rect) = rects.iter().find(|r| r.id == focused_id) {
-                        renderer.build_rect_outline(
-                            rect.x,
-                            rect.y,
-                            rect.w,
-                            rect.h,
-                            1.0,
-                            theme::tokens::ACCENT,
-                            &mut vertices,
-                        );
-                    }
+                // Divider strips in the gutter; highlight the one hovered or dragged.
+                for d in &dividers {
+                    let active = dragging_divider == Some(d.split_id)
+                        || (dragging_divider.is_none() && hovered_divider == Some(d.split_id));
+                    let color = if active {
+                        theme::tokens::DIVIDER_HOVER
+                    } else {
+                        theme::tokens::DIVIDER
+                    };
+                    renderer.build_rect(d.x, d.y, d.w, d.h, color, &mut vertices);
                 }
 
                 // Selection overlay (alpha 25% accent)

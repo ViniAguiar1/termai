@@ -70,11 +70,6 @@ fn indexed_to_rgb(theme: &Theme, idx: u8) -> [f32; 4] {
 // ---------------------------------------------------------------------------
 
 impl Theme {
-    /// Pane divider color.
-    pub fn divider(&self) -> [f32; 4] {
-        blend(self.bg, self.fg, 0.25)
-    }
-
     /// Cursor color for underline/bar styles.
     pub fn cursor_bar(&self) -> [f32; 4] {
         blend(self.bg, self.fg, 0.35)

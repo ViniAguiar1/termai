@@ -9,6 +9,38 @@ pub struct Config {
     pub terminal: TerminalConfig,
     pub theme: ThemeConfig,
     pub cursor: CursorConfig,
+    pub keys: KeysConfig,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(default)]
+pub struct KeysConfig {
+    /// tmux-style split leader, e.g. "ctrl+b". Followed by `|` (vertical) or
+    /// `-` (horizontal). Only `ctrl+<char>` is supported.
+    pub leader: String,
+}
+
+impl Default for KeysConfig {
+    fn default() -> Self {
+        Self { leader: "ctrl+b".to_string() }
+    }
+}
+
+impl KeysConfig {
+    /// The leader's character (the part after `ctrl+`), lowercased. Defaults to 'b'.
+    pub fn leader_char(&self) -> char {
+        self.leader
+            .rsplit('+')
+            .next()
+            .and_then(|s| s.trim().chars().next())
+            .unwrap_or('b')
+            .to_ascii_lowercase()
+    }
+
+    /// The control byte the leader maps to (e.g. ctrl+b → 0x02), for pass-through.
+    pub fn leader_byte(&self) -> u8 {
+        (self.leader_char() as u8) & 0x1f
+    }
 }
 
 #[derive(Deserialize, Debug)]
@@ -64,6 +96,7 @@ impl Default for Config {
             terminal: TerminalConfig::default(),
             theme: ThemeConfig::default(),
             cursor: CursorConfig::default(),
+            keys: KeysConfig::default(),
         }
     }
 }

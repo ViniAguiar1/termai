@@ -96,15 +96,36 @@ pub enum SplitDir {
     Horizontal, // stacked (top / bottom)
 }
 
+static NEXT_SPLIT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 /// A tree node: either a leaf (Pane) or a split containing two children.
 pub enum PaneNode {
     Leaf(Pane),
     Split {
+        /// Stable id used to address this split when dragging its divider.
+        id: u64,
         dir: SplitDir,
         ratio: f32, // 0.0..1.0, how much space the first child gets
         first: Box<PaneNode>,
         second: Box<PaneNode>,
     },
+}
+
+/// A draggable divider between two panes, in pixel coordinates.
+#[derive(Clone, Debug)]
+pub struct DividerRect {
+    pub split_id: u64,
+    pub dir: SplitDir,
+    /// The gutter strip itself.
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    /// The containing split's rect — used to recompute the ratio while dragging.
+    pub cont_x: f32,
+    pub cont_y: f32,
+    pub cont_w: f32,
+    pub cont_h: f32,
 }
 
 impl PaneNode {
@@ -193,6 +214,7 @@ impl PaneNode {
                 };
 
                 *self = PaneNode::Split {
+                    id: NEXT_SPLIT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
                     dir,
                     ratio: 0.5,
                     first: Box::new(old),
@@ -245,8 +267,8 @@ impl PaneNode {
     }
 
     /// Collect all panes with their pixel-space rectangles.
-    /// Returns (pane_id, x, y, width, height) for each pane.
-    pub fn layout(&self, x: f32, y: f32, w: f32, h: f32) -> Vec<PaneRect> {
+    /// `gutter` is the pixel gap reserved between sibling panes for the divider.
+    pub fn layout(&self, x: f32, y: f32, w: f32, h: f32, gutter: f32) -> Vec<PaneRect> {
         match self {
             PaneNode::Leaf(pane) => {
                 vec![PaneRect {
@@ -262,25 +284,98 @@ impl PaneNode {
                 ratio,
                 first,
                 second,
+                ..
             } => {
                 let mut rects = Vec::new();
                 match dir {
                     SplitDir::Vertical => {
-                        let divider = 1.0; // 1px divider
-                        let first_w = (w * ratio - divider / 2.0).max(0.0);
-                        let second_w = (w * (1.0 - ratio) - divider / 2.0).max(0.0);
-                        rects.extend(first.layout(x, y, first_w, h));
-                        rects.extend(second.layout(x + first_w + divider, y, second_w, h));
+                        let first_w = (w * ratio - gutter / 2.0).max(0.0);
+                        let second_w = (w * (1.0 - ratio) - gutter / 2.0).max(0.0);
+                        rects.extend(first.layout(x, y, first_w, h, gutter));
+                        rects.extend(second.layout(x + first_w + gutter, y, second_w, h, gutter));
                     }
                     SplitDir::Horizontal => {
-                        let divider = 1.0;
-                        let first_h = (h * ratio - divider / 2.0).max(0.0);
-                        let second_h = (h * (1.0 - ratio) - divider / 2.0).max(0.0);
-                        rects.extend(first.layout(x, y, w, first_h));
-                        rects.extend(second.layout(x, y + first_h + divider, w, second_h));
+                        let first_h = (h * ratio - gutter / 2.0).max(0.0);
+                        let second_h = (h * (1.0 - ratio) - gutter / 2.0).max(0.0);
+                        rects.extend(first.layout(x, y, w, first_h, gutter));
+                        rects.extend(second.layout(x, y + first_h + gutter, w, second_h, gutter));
                     }
                 }
                 rects
+            }
+        }
+    }
+
+    /// Collect every divider strip (one per split) with its container geometry.
+    pub fn dividers(&self, x: f32, y: f32, w: f32, h: f32, gutter: f32) -> Vec<DividerRect> {
+        match self {
+            PaneNode::Leaf(_) => vec![],
+            PaneNode::Split {
+                id,
+                dir,
+                ratio,
+                first,
+                second,
+            } => {
+                let mut out = Vec::new();
+                match dir {
+                    SplitDir::Vertical => {
+                        let first_w = (w * ratio - gutter / 2.0).max(0.0);
+                        let second_w = (w * (1.0 - ratio) - gutter / 2.0).max(0.0);
+                        out.push(DividerRect {
+                            split_id: *id,
+                            dir: *dir,
+                            x: x + first_w,
+                            y,
+                            w: gutter,
+                            h,
+                            cont_x: x,
+                            cont_y: y,
+                            cont_w: w,
+                            cont_h: h,
+                        });
+                        out.extend(first.dividers(x, y, first_w, h, gutter));
+                        out.extend(second.dividers(x + first_w + gutter, y, second_w, h, gutter));
+                    }
+                    SplitDir::Horizontal => {
+                        let first_h = (h * ratio - gutter / 2.0).max(0.0);
+                        let second_h = (h * (1.0 - ratio) - gutter / 2.0).max(0.0);
+                        out.push(DividerRect {
+                            split_id: *id,
+                            dir: *dir,
+                            x,
+                            y: y + first_h,
+                            w,
+                            h: gutter,
+                            cont_x: x,
+                            cont_y: y,
+                            cont_w: w,
+                            cont_h: h,
+                        });
+                        out.extend(first.dividers(x, y, w, first_h, gutter));
+                        out.extend(second.dividers(x, y + first_h + gutter, w, second_h, gutter));
+                    }
+                }
+                out
+            }
+        }
+    }
+
+    /// Set the split ratio for the split with the given id. Clamped to keep both
+    /// panes usable. Returns true if the split was found.
+    pub fn set_ratio(&mut self, target_id: u64, new_ratio: f32) -> bool {
+        match self {
+            PaneNode::Leaf(_) => false,
+            PaneNode::Split {
+                id, ratio, first, second, ..
+            } => {
+                if *id == target_id {
+                    *ratio = new_ratio.clamp(0.1, 0.9);
+                    true
+                } else {
+                    first.set_ratio(target_id, new_ratio)
+                        || second.set_ratio(target_id, new_ratio)
+                }
             }
         }
     }

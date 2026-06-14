@@ -50,6 +50,18 @@ pub const TITLE_BAR_RESERVE: f32 = 0.0;
 pub const CONNECTION_INDICATOR_SIZE: f32 = 8.0;
 pub const CONNECTION_INDICATOR_RIGHT_PAD: f32 = 8.0;
 
+// Splits / panes (logical pixels; multiply by scale)
+/// Gap reserved between sibling panes for the draggable divider.
+pub const PANE_GUTTER: f32 = 6.0;
+/// Extra hit-test slop around the divider so the thin gutter is easy to grab.
+pub const DIVIDER_GRAB_SLOP: f32 = 4.0;
+/// Resting divider color (sits in the gutter between panes).
+pub const DIVIDER: [f32; 4] = rgb(0x1c, 0x1c, 0x1c);
+/// Divider color when hovered or being dragged.
+pub const DIVIDER_HOVER: [f32; 4] = ACCENT;
+/// Translucent black laid over inactive panes to focus the active one.
+pub const INACTIVE_PANE_DIM: [f32; 4] = [0.0, 0.0, 0.0, 0.38];
+
 // Typography
 pub const FONT_SIZE_CONTENT: f32 = 14.0;
 pub const FONT_SIZE_CHROME: f32 = 12.0;

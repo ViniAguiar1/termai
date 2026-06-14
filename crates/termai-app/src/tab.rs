@@ -68,8 +68,8 @@ impl Tab {
     }
 
     /// Get layout rectangles for all panes.
-    pub fn layout(&self, x: f32, y: f32, w: f32, h: f32) -> Vec<PaneRect> {
-        self.root.layout(x, y, w, h)
+    pub fn layout(&self, x: f32, y: f32, w: f32, h: f32, gutter: f32) -> Vec<PaneRect> {
+        self.root.layout(x, y, w, h, gutter)
     }
 
     /// Poll all panes. Returns true if any pane received data.
