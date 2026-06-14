@@ -116,7 +116,12 @@ struct App {
     /// Ghost text for AI autocomplete.
     ghost_text: Option<String>,
     ghost_text_debounce: Instant,
-    pending_autocomplete: bool,
+    /// `Some(t)` while a request is in flight (sent at `t`). Auto-expires after a
+    /// timeout so a dropped IPC response doesn't permanently block autocomplete.
+    pending_autocomplete: Option<Instant>,
+    /// True after the user typed and we haven't fired an autocomplete request yet
+    /// for that edit. Reset to true on every keystroke so each pause re-arms one fire.
+    autocomplete_armed: bool,
     hovered_tab: Option<usize>,
     hover_started: Instant,
 }
@@ -148,7 +153,8 @@ impl App {
             last_click_pos: (0, 0),
             ghost_text: None,
             ghost_text_debounce: Instant::now(),
-            pending_autocomplete: false,
+            pending_autocomplete: None,
+            autocomplete_armed: false,
             hovered_tab: None,
             hover_started: Instant::now(),
         }
@@ -225,8 +231,11 @@ impl App {
     fn pixel_to_cell_in_pane(&self, px: f64, py: f64, rect: &PaneRect) -> (usize, usize) {
         if let Some(ref renderer) = self.renderer {
             let (cw, ch) = renderer.cell_size();
-            let x = px as f32 * self.scale_factor - rect.x;
-            let y = py as f32 * self.scale_factor - rect.y;
+            // winit 0.30 reports CursorMoved.position in physical pixels, so no
+            // scale_factor multiplication is needed here. Renderer rects and
+            // cell_size are also in physical pixels.
+            let x = px as f32 - rect.x;
+            let y = py as f32 - rect.y;
             let col = (x / cw).floor().max(0.0) as usize;
             let row = (y / ch).floor().max(0.0) as usize;
             (col, row)
@@ -239,8 +248,8 @@ impl App {
         let (cx, cy, cw, ch) = self.content_area();
         let rects = self.tab_bar.tabs[self.tab_bar.active]
             .layout(cx, cy, cw, ch);
-        let sx = px as f32 * self.scale_factor;
-        let sy = py as f32 * self.scale_factor;
+        let sx = px as f32;
+        let sy = py as f32;
         rects.into_iter().find(|r| {
             sx >= r.x && sx < r.x + r.w && sy >= r.y && sy < r.y + r.h
         })
@@ -257,6 +266,9 @@ impl App {
             && pane.terminal.scroll_offset == 0;
         let cursor_alpha = if cursor_shown { self.cursor_opacity() } else { 0.0 };
 
+        // Detect URLs once per frame so we can underline them like hyperlinks.
+        let urls = pane.terminal.detect_urls();
+
         visible
             .iter()
             .enumerate()
@@ -271,7 +283,14 @@ impl App {
                             std::mem::swap(&mut fg, &mut bg);
                         }
 
-                        // URL hover highlight
+                        // URL detection: underline always, recolor on Cmd-hover.
+                        // Selection + search highlights are drawn as alpha overlays
+                        // after pane content, so they're not applied at cell level.
+                        let is_url = urls.iter().any(|&(ur, us, ue)| {
+                            row_idx == ur && col_idx >= us && col_idx < ue
+                        });
+                        let mut underline = is_url;
+
                         if let Some((ur, us, ue)) = self.hovered_url {
                             if row_idx == ur && col_idx >= us && col_idx < ue {
                                 fg = [0.4, 0.6, 1.0, 1.0]; // link blue
@@ -295,9 +314,11 @@ impl App {
                                     bg = c;
                                 }
                             }
+                            // Don't underline the cell that's already showing the cursor.
+                            underline = false;
                         }
 
-                        RenderCell { ch: cell.c, fg, bg }
+                        RenderCell { ch: cell.c, fg, bg, underline }
                     })
                     .collect()
             })
@@ -579,6 +600,36 @@ fn find_pane_ref(node: &pane::PaneNode, id: u64) -> Option<&pane::Pane> {
             find_pane_ref(first, id).or_else(|| find_pane_ref(second, id))
         }
     }
+}
+
+/// Strip a shell prompt prefix from a line, returning what the user typed.
+/// Heuristic: cut after the last "$ ", "% ", "> " or "# " (common prompt endings).
+fn strip_prompt(line: &str) -> &str {
+    for marker in ["$ ", "% ", "# ", "> "] {
+        if let Some(idx) = line.rfind(marker) {
+            return line[idx + marker.len()..].trim_start();
+        }
+    }
+    line.trim_start()
+}
+
+/// Pull the last `n` non-empty lines above `cursor_y` as plain strings — used as
+/// LLM context for autocomplete. Trailing whitespace is trimmed per line.
+fn recent_history(grid: &[Vec<termai_core::Cell>], cursor_y: usize, n: usize) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let upper = cursor_y.min(grid.len());
+    for row in grid[..upper].iter().rev() {
+        let line: String = row.iter().map(|c| c.c).collect();
+        let line = line.trim_end().to_string();
+        if !line.is_empty() {
+            out.push(line);
+            if out.len() >= n {
+                break;
+            }
+        }
+    }
+    out.reverse();
+    out.join("\n")
 }
 
 impl ApplicationHandler for App {
@@ -1108,6 +1159,7 @@ impl ApplicationHandler for App {
                         // Dismiss AI overlay on new input
                         self.ai_overlay = None;
                         self.ghost_text_debounce = Instant::now();
+                        self.autocomplete_armed = true;
                         pane.write(&bytes);
                     }
                 }
@@ -1132,33 +1184,55 @@ impl ApplicationHandler for App {
                             ai::AiMessage::NoSuggestion => {}
                             ai::AiMessage::Completion(text) => {
                                 self.ghost_text = Some(text);
-                                self.pending_autocomplete = false;
+                                self.pending_autocomplete = None;
                             }
                             ai::AiMessage::NoCompletion => {
-                                self.pending_autocomplete = false;
+                                self.pending_autocomplete = None;
                             }
                         }
                     }
                 }
 
-                // Autocomplete debounce: request after 300ms of idle typing
-                if self.ghost_text.is_none() && !self.pending_autocomplete {
-                    let elapsed = self.ghost_text_debounce.elapsed();
-                    if elapsed > Duration::from_millis(300) && elapsed < Duration::from_millis(500) {
-                        if let Some(pane) = self.find_focused_pane_ref() {
-                            if pane.terminal.cursor_x > 2 {
-                                let row = &pane.terminal.grid[pane.terminal.cursor_y];
-                                let line: String = row.iter()
-                                    .take(pane.terminal.cursor_x)
-                                    .map(|c| c.c).collect();
-                                let line = line.trim().to_string();
-                                if line.len() > 2 {
-                                    if let Some(ref ai_client) = self.ai_client {
-                                        ai_client.autocomplete(&line, ".", "");
-                                        self.pending_autocomplete = true;
-                                    }
+                // Autocomplete: fire once, 300ms after the user stops typing.
+                // `autocomplete_armed` is set on every keystroke and cleared after firing,
+                // so we don't keep hammering the LLM after a NoCompletion.
+                // Pending requests time out after 5s so a dropped response can't
+                // permanently block future requests.
+                let pending = matches!(
+                    self.pending_autocomplete,
+                    Some(t) if t.elapsed() < Duration::from_secs(5)
+                );
+                if !pending {
+                    self.pending_autocomplete = None;
+                }
+                if self.autocomplete_armed
+                    && self.ghost_text.is_none()
+                    && !pending
+                    && self.ghost_text_debounce.elapsed() > Duration::from_millis(300)
+                {
+                    if let Some(pane) = self.find_focused_pane_ref() {
+                        let cx = pane.terminal.cursor_x;
+                        let cy = pane.terminal.cursor_y;
+                        if cx >= 1 && cy < pane.terminal.grid.len() {
+                            let row = &pane.terminal.grid[cy];
+                            let line: String = row.iter().take(cx).map(|c| c.c).collect();
+                            let typed = strip_prompt(&line);
+                            if !typed.is_empty() {
+                                let typed = typed.to_string();
+                                let cwd = std::env::current_dir()
+                                    .map(|p| p.display().to_string())
+                                    .unwrap_or_else(|_| ".".to_string());
+                                let history = recent_history(&pane.terminal.grid, cy, 10);
+                                if let Some(ref ai_client) = self.ai_client {
+                                    ai_client.autocomplete(&typed, &cwd, &history);
+                                    self.pending_autocomplete = Some(Instant::now());
+                                    self.autocomplete_armed = false;
                                 }
+                            } else {
+                                self.autocomplete_armed = false;
                             }
+                        } else {
+                            self.autocomplete_armed = false;
                         }
                     }
                 }
@@ -1217,6 +1291,7 @@ impl ApplicationHandler for App {
                                     ch: c,
                                     fg: theme::tokens::TEXT_DIM,
                                     bg: theme_bg,
+                                    underline: false,
                                 }).collect()
                             ];
                             Some((cursor_x, cursor_y, ghost_cells))

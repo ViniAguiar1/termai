@@ -210,7 +210,18 @@ func (c *Client) analyzeOpenAI(command, errorOutput string) (*analyzer.Suggestio
 	return parseOpenAIResponse(respBody)
 }
 
-const autocompleteSystemPrompt = `You are a shell command autocomplete engine. Return ONLY the completion text to append to the partial command. No explanation, no markdown, no quotes. If you cannot suggest a completion, return an empty string.`
+const autocompleteSystemPrompt = `You are a shell command autocomplete engine. Suggest the most likely completion for the user's partial command.
+
+Rules:
+- Return ONLY the suffix to append to the partial command. No prefix, no markdown, no quotes, no explanation.
+- The "Recent commands" context may include error messages or output from past commands — IGNORE errors there. Past failures do not mean the user wants something different now; they are still typing.
+- Always try to suggest something plausible based on the partial command alone. Common commands (git, npm, docker, cd, ls, etc.) have well-known completions.
+- Only return an empty string if the partial command is gibberish that cannot be reasonably completed.
+- Examples (partial → completion):
+  "git ch" → "eckout"
+  "git st" → "atus"
+  "npm i" → "nstall"
+  "docker p" → "s"`
 
 // Autocomplete sends a partial command to the LLM and returns the completion text.
 func (c *Client) Autocomplete(partialCmd, cwd, history string) (string, error) {
