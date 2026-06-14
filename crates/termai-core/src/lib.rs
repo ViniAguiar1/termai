@@ -125,6 +125,53 @@ impl Terminal {
         }
     }
 
+    /// Resize the grid to new dimensions and reset the scroll region to the
+    /// full screen. Without resetting `scroll_bottom`, output stays confined to
+    /// the original region after the window grows, so new lines stop appearing.
+    /// Content is preserved top-left; the shell repaints via the PTY SIGWINCH.
+    pub fn resize(&mut self, new_cols: usize, new_rows: usize) {
+        let new_cols = new_cols.max(1);
+        let new_rows = new_rows.max(1);
+        if new_cols == self.cols && new_rows == self.rows {
+            return;
+        }
+
+        let reflow = |grid: &[Vec<Cell>]| -> Vec<Vec<Cell>> {
+            let mut g = vec![vec![Cell::default(); new_cols]; new_rows];
+            for (y, row) in grid.iter().enumerate() {
+                if y >= new_rows {
+                    break;
+                }
+                for (x, cell) in row.iter().enumerate() {
+                    if x >= new_cols {
+                        break;
+                    }
+                    g[y][x] = cell.clone();
+                }
+            }
+            g
+        };
+
+        self.grid = reflow(&self.grid);
+        self.alt_grid = reflow(&self.alt_grid);
+        self.cols = new_cols;
+        self.rows = new_rows;
+
+        // Scroll region back to the full screen (it was clamped to the old size).
+        self.scroll_top = 0;
+        self.scroll_bottom = new_rows - 1;
+
+        let max_x = new_cols - 1;
+        let max_y = new_rows - 1;
+        self.cursor_x = self.cursor_x.min(max_x);
+        self.cursor_y = self.cursor_y.min(max_y);
+        self.saved_cursor_x = self.saved_cursor_x.min(max_x);
+        self.saved_cursor_y = self.saved_cursor_y.min(max_y);
+        self.alt_cursor_x = self.alt_cursor_x.min(max_x);
+        self.alt_cursor_y = self.alt_cursor_y.min(max_y);
+        self.scroll_offset = 0;
+    }
+
     /// Feed raw bytes from PTY into the terminal state machine.
     pub fn feed(&mut self, bytes: &[u8]) {
         let mut parser = Parser::new();
@@ -1038,5 +1085,28 @@ mod tests {
         let matches = term.search("findme");
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].0, 0); // first scrollback line
+    }
+
+    #[test]
+    fn resize_resets_scroll_region_and_scrolls() {
+        let mut term = Terminal::new(80, 24);
+        assert_eq!(term.scroll_bottom, 23);
+
+        // Window grows to 50 rows.
+        term.resize(80, 50);
+        assert_eq!(term.rows, 50);
+        assert_eq!(term.scroll_top, 0);
+        assert_eq!(term.scroll_bottom, 49); // regression: was stuck at 23
+
+        // Output that fills past the old region must keep scrolling: drive the
+        // cursor to the new bottom and one more linefeed scrolls into scrollback.
+        for _ in 0..49 {
+            term.linefeed();
+        }
+        assert_eq!(term.cursor_y, 49);
+        assert!(term.scrollback.is_empty());
+        term.linefeed();
+        assert_eq!(term.cursor_y, 49); // stays pinned at the bottom
+        assert_eq!(term.scrollback.len(), 1); // top line scrolled off
     }
 }
