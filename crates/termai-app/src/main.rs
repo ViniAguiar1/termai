@@ -471,71 +471,6 @@ impl App {
         pane.clear_recent_output();
     }
 
-    fn build_ai_overlay_cells(&self) -> Vec<Vec<RenderCell>> {
-        let suggestion = match self.ai_overlay {
-            Some(ref s) => s,
-            None => return vec![],
-        };
-        let renderer = match self.renderer {
-            Some(ref r) => r,
-            None => return vec![],
-        };
-
-        let (cols, _) = renderer.grid_size();
-        let cols = cols as usize;
-        let bg = self.theme.ai_overlay_bg();
-        let title_fg = [1.0, 0.8, 0.2, 1.0]; // Gold — intentionally fixed for visibility
-        let desc_fg = self.theme.fg;
-        let action_fg = [0.4, 0.9, 0.4, 1.0]; // Green — intentionally fixed
-        let hint_fg = self.theme.tab_fg();
-
-        let mut rows: Vec<Vec<RenderCell>> = Vec::new();
-
-        let make_row = |text: &str, fg: [f32; 4], bg: [f32; 4], cols: usize| -> Vec<RenderCell> {
-            let mut row = vec![RenderCell { ch: ' ', fg, bg }; cols];
-            for (i, ch) in text.chars().enumerate() {
-                if i >= cols {
-                    break;
-                }
-                row[i] = RenderCell { ch, fg, bg };
-            }
-            row
-        };
-
-        // Separator line
-        rows.push(make_row(&"─".repeat(cols.min(80)), hint_fg, bg, cols));
-
-        // Title
-        let title_text = format!(" {} ", suggestion.title);
-        rows.push(make_row(&title_text, title_fg, bg, cols));
-
-        // Description
-        if !suggestion.description.is_empty() {
-            let desc_text = format!(" {}", suggestion.description);
-            rows.push(make_row(&desc_text, desc_fg, bg, cols));
-        }
-
-        // Blank line
-        rows.push(make_row("", desc_fg, bg, cols));
-
-        // Actions
-        for (i, action) in suggestion.actions.iter().enumerate() {
-            let risk_indicator = match action.risk.as_str() {
-                "high" => " [!]",
-                "medium" => " [~]",
-                _ => "",
-            };
-            let action_text = format!(" [{}] {}{}", i + 1, action.label, risk_indicator);
-            rows.push(make_row(&action_text, action_fg, bg, cols));
-        }
-
-        // Hint
-        rows.push(make_row("", desc_fg, bg, cols));
-        rows.push(make_row(" Press 1-9 to execute, Esc to dismiss", hint_fg, bg, cols));
-
-        rows
-    }
-
     fn paste(&mut self) {
         if let Some(ref mut clip) = self.clipboard {
             if let Ok(text) = clip.get_text() {
@@ -1243,8 +1178,6 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                let overlay_cells = self.build_ai_overlay_cells();
-
                 // Ghost text (autocomplete suggestion) data
                 let ghost_data = if let Some(ref ghost) = self.ghost_text {
                     if let Some(pane) = find_pane_ref(&tab.root, focused_id) {
@@ -1477,12 +1410,41 @@ impl ApplicationHandler for App {
                 }
 
                 // AI suggestion overlay
-                if !overlay_cells.is_empty() {
+                if let Some(ref suggestion) = self.ai_overlay {
                     if let Some(rect) = rects.iter().find(|r| r.id == focused_id) {
-                        let (_, cell_h) = renderer.cell_size();
-                        let overlay_h = overlay_cells.len() as f32 * cell_h;
-                        let overlay_y = (rect.y + rect.h - overlay_h).max(rect.y);
-                        renderer.build_vertices(&overlay_cells, rect.x, overlay_y, &mut vertices);
+                        // Fade alpha: 1.0 until last 200ms of 10s lifetime, then linear fade.
+                        let elapsed = suggestion.created.elapsed().as_millis();
+                        let total = 10_000u128;
+                        let fade_start = total.saturating_sub(theme::tokens::OVERLAY_FADE_MS);
+                        let fade_alpha = if elapsed < fade_start {
+                            1.0
+                        } else {
+                            let remaining = total.saturating_sub(elapsed) as f32;
+                            (remaining / theme::tokens::OVERLAY_FADE_MS as f32).max(0.0)
+                        };
+
+                        let actions: Vec<ui::ai_overlay::ActionView> = suggestion
+                            .actions
+                            .iter()
+                            .map(|a| ui::ai_overlay::ActionView {
+                                label: &a.label,
+                                risk: ui::ai_overlay::Risk::from_str(&a.risk),
+                            })
+                            .collect();
+
+                        let input = ui::ai_overlay::AiOverlayInput {
+                            title: &suggestion.title,
+                            description: &suggestion.description,
+                            actions: &actions,
+                            pane_rect: (rect.x, rect.y, rect.w, rect.h),
+                            fade_alpha,
+                        };
+                        ui::ai_overlay::render(
+                            &input,
+                            renderer,
+                            &mut vertices,
+                            &mut chrome_vertices,
+                        );
                     }
                 }
 
