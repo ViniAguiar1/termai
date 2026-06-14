@@ -155,14 +155,15 @@ impl App {
     }
 
     fn tab_bar_pixel_height(&self) -> f32 {
-        // Strip is always present so the chrome reads as part of the window.
-        // On macOS the strip also absorbs the title-bar reserve so traffic
-        // lights sit ABOVE the tabs row rather than overlapping content.
-        // Tokens are in LOGICAL pixels; multiply by scale for physical.
-        (theme::tokens::TITLE_BAR_RESERVE
-            + theme::tokens::TAB_STRIP_HEIGHT
-            + theme::tokens::TAB_STRIP_BORDER)
-            * self.scale_factor
+        // With 2+ tabs we show the strip; traffic lights sit beside the first tab.
+        // With 1 tab we hide the strip but still keep clear space at the top for
+        // the macOS title-bar controls on fullsize-content-view windows.
+        let logical = if self.tab_bar.tab_count() > 1 {
+            theme::tokens::TAB_STRIP_HEIGHT + theme::tokens::TAB_STRIP_BORDER
+        } else {
+            theme::tokens::TITLE_BAR_RESERVE
+        };
+        logical * self.scale_factor
     }
 
     /// Return the effective cursor style, giving the user config priority over
@@ -305,26 +306,29 @@ impl App {
 
     /// Check if a click is in the tab bar and switch tabs if so. Returns true if handled.
     fn handle_tab_bar_click(&mut self, px: f64, py: f64) -> bool {
-        let tab_h = self.tab_bar_pixel_height();
-        if tab_h == 0.0 {
+        if self.tab_bar.tab_count() <= 1 {
             return false;
         }
         let sy = py as f32 * self.scale_factor;
-        if sy >= tab_h {
+        let s = self.scale_factor;
+        let strip_h = theme::tokens::TAB_STRIP_HEIGHT * s;
+        if sy >= strip_h {
             return false;
         }
         let strip_width = self.renderer.as_ref().map(|r| r.width() as f32).unwrap_or(0.0);
-        let s = self.scale_factor;
         let tab_layout = ui::tab_bar::layout_tabs(
             self.tab_bar.tab_count(),
             strip_width,
-            theme::tokens::TAB_STRIP_HEIGHT * s,
+            strip_h,
             theme::tokens::TRAFFIC_LIGHTS_RESERVE * s,
             s,
         );
         let sx = px as f32 * self.scale_factor;
         if let Some(idx) = ui::tab_bar::hit_test(&tab_layout, sx, sy) {
             self.tab_bar.switch_to(idx);
+            if let Some(ref window) = self.window {
+                window.request_redraw();
+            }
             return true;
         }
         false
@@ -796,18 +800,18 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                // Tab bar hover tracking
-                let new_hover = {
+                // Tab bar hover tracking (only when 2+ tabs)
+                let new_hover = if self.tab_bar.tab_count() > 1 {
                     let sx = position.x as f32 * self.scale_factor;
                     let sy = position.y as f32 * self.scale_factor;
-                    let tab_h = self.tab_bar_pixel_height();
-                    if tab_h > 0.0 && sy < tab_h {
+                    let s = self.scale_factor;
+                    let strip_h = theme::tokens::TAB_STRIP_HEIGHT * s;
+                    if sy < strip_h {
                         let strip_width = self.renderer.as_ref().map(|r| r.width() as f32).unwrap_or(0.0);
-                        let s = self.scale_factor;
                         let tab_layout = ui::tab_bar::layout_tabs(
                             self.tab_bar.tab_count(),
                             strip_width,
-                            theme::tokens::TAB_STRIP_HEIGHT * s,
+                            strip_h,
                             theme::tokens::TRAFFIC_LIGHTS_RESERVE * s,
                             s,
                         );
@@ -815,6 +819,8 @@ impl ApplicationHandler for App {
                     } else {
                         None
                     }
+                } else {
+                    None
                 };
                 if new_hover != self.hovered_tab {
                     self.hovered_tab = new_hover;
@@ -1172,13 +1178,18 @@ impl ApplicationHandler for App {
                 let titles = self.tab_titles();
                 let strip_width_pre = self.renderer.as_ref().map(|r| r.width() as f32).unwrap_or(0.0);
                 let s = self.scale_factor;
-                let tab_layout = ui::tab_bar::layout_tabs(
-                    self.tab_bar.tab_count(),
-                    strip_width_pre,
-                    theme::tokens::TAB_STRIP_HEIGHT * s,
-                    theme::tokens::TRAFFIC_LIGHTS_RESERVE * s,
-                    s,
-                );
+                // Strip only renders with 2+ tabs.
+                let tab_layout = if self.tab_bar.tab_count() > 1 {
+                    ui::tab_bar::layout_tabs(
+                        self.tab_bar.tab_count(),
+                        strip_width_pre,
+                        theme::tokens::TAB_STRIP_HEIGHT * s,
+                        theme::tokens::TRAFFIC_LIGHTS_RESERVE * s,
+                        s,
+                    )
+                } else {
+                    vec![]
+                };
                 let (cx, cy, cw, ch) = self.content_area();
                 let tab = &self.tab_bar.tabs[self.tab_bar.active];
                 let rects = tab.layout(cx, cy, cw, ch);

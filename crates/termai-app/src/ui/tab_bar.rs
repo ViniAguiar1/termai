@@ -38,12 +38,11 @@ pub fn layout_tabs(
 
     let mut out = Vec::with_capacity(tab_count);
     let mut x = traffic_lights_reserve;
-    let tab_y = tokens::TITLE_BAR_RESERVE * scale;
     for i in 0..tab_count {
         out.push(TabRect {
             index: i,
             x,
-            y: tab_y,
+            y: 0.0,
             w: per_tab,
             h: strip_height,
         });
@@ -81,15 +80,15 @@ pub fn render_tab_bar(
     chrome_vertices: &mut Vec<Vertex>,
 ) {
     let s = input.scale;
-    let strip_total_h = (tokens::TITLE_BAR_RESERVE + tokens::TAB_STRIP_HEIGHT) * s;
+    let strip_h = tokens::TAB_STRIP_HEIGHT * s;
     let border_h = tokens::TAB_STRIP_BORDER * s;
 
-    // 1. Strip background (covers the title-bar reserve AND the tab row).
+    // 1. Strip background (just the tab row — traffic lights overlay it).
     renderer.build_rect(
         0.0,
         0.0,
         input.strip_width,
-        strip_total_h,
+        strip_h,
         tokens::CHROME_BG,
         main_vertices,
     );
@@ -97,7 +96,7 @@ pub fn render_tab_bar(
     // 2. Bottom border of the strip.
     renderer.build_rect(
         0.0,
-        strip_total_h,
+        strip_h,
         input.strip_width,
         border_h,
         tokens::CHROME_BORDER,

@@ -22,9 +22,8 @@ pub fn render(
 ) {
     let size = tokens::CONNECTION_INDICATOR_SIZE * scale;
     let x = strip_width - size - tokens::CONNECTION_INDICATOR_RIGHT_PAD * scale;
-    // Center the dot vertically within the tabs row (below the title-bar reserve).
-    let y = tokens::TITLE_BAR_RESERVE * scale
-        + (tokens::TAB_STRIP_HEIGHT * scale - size) / 2.0;
+    // Center the dot vertically within the strip.
+    let y = (tokens::TAB_STRIP_HEIGHT * scale - size) / 2.0;
 
     match state {
         State::Connected => {
