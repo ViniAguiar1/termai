@@ -5,10 +5,25 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 APP_NAME="termAI"
 BUNDLE_NAME="$APP_NAME.app"
-DMG_NAME="termAI-0.1.0-beta-macos-arm64.dmg"
+
+# Single source of truth for the version: explicit arg > git tag > Cargo.toml.
+# Pass e.g. `package.sh 0.2.0`, otherwise derive from the latest `vX.Y.Z` tag,
+# falling back to the workspace package version.
+VERSION="${1:-}"
+if [ -z "$VERSION" ]; then
+    VERSION="$(git -C "$ROOT_DIR" describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')"
+fi
+if [ -z "$VERSION" ]; then
+    VERSION="$(awk -F'"' '/^version/ {print $2; exit}' "$ROOT_DIR/Cargo.toml")"
+fi
+ARCH="$(uname -m)" # arm64 or x86_64
+
+DMG_NAME="termAI-${VERSION}-macos-${ARCH}.dmg"
 BUILD_DIR="$ROOT_DIR/target/release"
 DIST_DIR="$ROOT_DIR/dist"
 APP_DIR="$DIST_DIR/$BUNDLE_NAME"
+
+echo "Version: $VERSION  Arch: $ARCH"
 
 # Code signing (set these env vars before running)
 SIGN_IDENTITY="${APPLE_SIGN_IDENTITY:?Set APPLE_SIGN_IDENTITY (e.g. 'Developer ID Application: Name (TEAMID)')}"
@@ -17,10 +32,12 @@ TEAM_ID="${APPLE_TEAM_ID:?Set APPLE_TEAM_ID}"
 echo "=== Building termAI for macOS ==="
 echo ""
 
-# 1. Build Go AI engine
+# 1. Build Go AI engine (inject version so `--version` and update-check match)
 echo "[1/6] Building Go AI engine..."
 cd "$ROOT_DIR/ai"
-CGO_ENABLED=0 go build -ldflags "-s -w" -o "$BUILD_DIR/termai-ai" .
+CGO_ENABLED=0 go build \
+    -ldflags "-s -w -X github.com/ViniAguiar1/termai/ai/cmd.appVersion=v${VERSION}" \
+    -o "$BUILD_DIR/termai-ai" .
 
 # 2. Build Rust terminal (release, Apple Silicon)
 echo "[2/6] Building Rust terminal..."
@@ -33,8 +50,10 @@ rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources"
 
-# Copy Info.plist
+# Copy Info.plist and stamp the version from VERSION
 cp "$SCRIPT_DIR/Info.plist" "$APP_DIR/Contents/"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$APP_DIR/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP_DIR/Contents/Info.plist"
 
 # Copy binaries
 cp "$BUILD_DIR/termai" "$APP_DIR/Contents/MacOS/"
