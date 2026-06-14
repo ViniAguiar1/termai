@@ -69,49 +69,9 @@ fn indexed_to_rgb(theme: &Theme, idx: u8) -> [f32; 4] {
 // ---------------------------------------------------------------------------
 
 impl Theme {
-    /// Tab bar background (inactive tabs).
-    pub fn tab_bg(&self) -> [f32; 4] {
-        blend(self.bg, [1.0, 1.0, 1.0, 1.0], 0.06)
-    }
-
-    /// Tab bar background (active tab).
-    pub fn tab_active_bg(&self) -> [f32; 4] {
-        blend(self.bg, [1.0, 1.0, 1.0, 1.0], 0.15)
-    }
-
-    /// Tab bar foreground (inactive tabs).
-    pub fn tab_fg(&self) -> [f32; 4] {
-        blend(self.fg, self.bg, 0.4)
-    }
-
-    /// Tab bar foreground (active tab).
-    pub fn tab_active_fg(&self) -> [f32; 4] {
-        self.fg
-    }
-
-    /// Tab separator color.
-    pub fn tab_separator(&self) -> [f32; 4] {
-        blend(self.bg, self.fg, 0.2)
-    }
-
     /// Pane divider color.
     pub fn divider(&self) -> [f32; 4] {
         blend(self.bg, self.fg, 0.25)
-    }
-
-    /// Search bar background.
-    pub fn search_bg(&self) -> [f32; 4] {
-        blend(self.bg, [1.0, 1.0, 1.0, 1.0], 0.10)
-    }
-
-    /// Search bar foreground.
-    pub fn search_fg(&self) -> [f32; 4] {
-        self.fg
-    }
-
-    /// AI overlay background.
-    pub fn ai_overlay_bg(&self) -> [f32; 4] {
-        blend(self.bg, [0.0, 0.2, 0.5, 1.0], 0.15)
     }
 
     /// Cursor color for underline/bar styles.

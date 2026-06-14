@@ -29,7 +29,6 @@ use tab::TabBar;
 const MIN_FONT_SIZE: f32 = 10.0;
 const MAX_FONT_SIZE: f32 = 60.0;
 const ZOOM_STEP: f32 = 2.0;
-const TAB_BAR_HEIGHT: f32 = 0.0; // Will be set based on cell height
 
 struct Selection {
     start_col: usize,
