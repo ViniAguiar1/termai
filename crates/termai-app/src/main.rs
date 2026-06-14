@@ -155,11 +155,8 @@ impl App {
     }
 
     fn tab_bar_pixel_height(&self) -> f32 {
-        if self.tab_bar.tab_count() <= 1 {
-            // No tab strip, but on macOS we still need to keep the
-            // traffic-lights row clear of terminal output.
-            return theme::tokens::TITLE_BAR_RESERVE;
-        }
+        // Strip is always present so the chrome reads as part of the window
+        // (and on macOS the traffic-lights row needs to clear the content).
         theme::tokens::TAB_STRIP_HEIGHT + theme::tokens::TAB_STRIP_BORDER
     }
 
@@ -1164,17 +1161,13 @@ impl ApplicationHandler for App {
 
                 // Build all cell data first (before borrowing renderer mutably)
                 let titles = self.tab_titles();
-                let tab_layout = if self.tab_bar.tab_count() > 1 {
-                    let strip_width = self.renderer.as_ref().map(|r| r.width() as f32).unwrap_or(0.0);
-                    ui::tab_bar::layout_tabs(
-                        self.tab_bar.tab_count(),
-                        strip_width,
-                        theme::tokens::TAB_STRIP_HEIGHT,
-                        theme::tokens::TRAFFIC_LIGHTS_RESERVE,
-                    )
-                } else {
-                    vec![]
-                };
+                let strip_width_pre = self.renderer.as_ref().map(|r| r.width() as f32).unwrap_or(0.0);
+                let tab_layout = ui::tab_bar::layout_tabs(
+                    self.tab_bar.tab_count(),
+                    strip_width_pre,
+                    theme::tokens::TAB_STRIP_HEIGHT,
+                    theme::tokens::TRAFFIC_LIGHTS_RESERVE,
+                );
                 let (cx, cy, cw, ch) = self.content_area();
                 let tab = &self.tab_bar.tabs[self.tab_bar.active];
                 let rects = tab.layout(cx, cy, cw, ch);
@@ -1253,7 +1246,7 @@ impl ApplicationHandler for App {
                     };
                     ui::tab_bar::render_tab_bar(&input, renderer, &mut vertices, &mut chrome_vertices);
 
-                    if self.tab_bar.tab_count() > 1 {
+                    {
                         let state = match self.ai_client.as_ref() {
                             Some(c) if c.is_analyzing() => ui::connection_indicator::State::Analyzing,
                             Some(c) if c.is_connected() => ui::connection_indicator::State::Connected,
@@ -1338,17 +1331,19 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                // Focused pane border (above dividers, below overlays)
-                if let Some(rect) = rects.iter().find(|r| r.id == focused_id) {
-                    renderer.build_rect_outline(
-                        rect.x,
-                        rect.y,
-                        rect.w,
-                        rect.h,
-                        1.0,
-                        theme::tokens::ACCENT,
-                        &mut vertices,
-                    );
+                // Focused pane border — only meaningful when there are multiple panes.
+                if rects.len() > 1 {
+                    if let Some(rect) = rects.iter().find(|r| r.id == focused_id) {
+                        renderer.build_rect_outline(
+                            rect.x,
+                            rect.y,
+                            rect.w,
+                            rect.h,
+                            1.0,
+                            theme::tokens::ACCENT,
+                            &mut vertices,
+                        );
+                    }
                 }
 
                 // Selection overlay (alpha 25% accent)

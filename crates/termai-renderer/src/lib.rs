@@ -89,10 +89,14 @@ impl Renderer {
         let queue = Arc::new(queue);
 
         let surface_caps = surface.get_capabilities(&adapter);
+        // Prefer a non-sRGB format: our hex color tokens are already in
+        // perceptual sRGB space, so an sRGB surface would double-encode and
+        // brighten the rendered output. Falling back to whatever's available
+        // if no Unorm match (rare).
         let surface_format = surface_caps
             .formats
             .iter()
-            .find(|f| f.is_srgb())
+            .find(|f| !f.is_srgb())
             .copied()
             .unwrap_or(surface_caps.formats[0]);
 
