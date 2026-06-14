@@ -36,6 +36,13 @@ pub const TRAFFIC_LIGHTS_RESERVE: f32 = 78.0;
 #[cfg(not(target_os = "macos"))]
 pub const TRAFFIC_LIGHTS_RESERVE: f32 = 0.0;
 
+// macOS: vertical reserve at the top of content when there's no tab strip,
+// so the traffic-lights row doesn't overlap terminal output.
+#[cfg(target_os = "macos")]
+pub const TITLE_BAR_RESERVE: f32 = 28.0;
+#[cfg(not(target_os = "macos"))]
+pub const TITLE_BAR_RESERVE: f32 = 0.0;
+
 // Connection indicator (right side of strip)
 pub const CONNECTION_INDICATOR_SIZE: f32 = 8.0;
 pub const CONNECTION_INDICATOR_RIGHT_PAD: f32 = 8.0;

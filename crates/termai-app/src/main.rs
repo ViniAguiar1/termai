@@ -156,7 +156,9 @@ impl App {
 
     fn tab_bar_pixel_height(&self) -> f32 {
         if self.tab_bar.tab_count() <= 1 {
-            return 0.0;
+            // No tab strip, but on macOS we still need to keep the
+            // traffic-lights row clear of terminal output.
+            return theme::tokens::TITLE_BAR_RESERVE;
         }
         theme::tokens::TAB_STRIP_HEIGHT + theme::tokens::TAB_STRIP_BORDER
     }
@@ -588,6 +590,7 @@ impl ApplicationHandler for App {
         {
             attrs = attrs
                 .with_titlebar_transparent(true)
+                .with_title_hidden(true)
                 .with_fullsize_content_view(true);
         }
 
