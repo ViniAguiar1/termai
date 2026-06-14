@@ -1,6 +1,7 @@
 mod ai;
 mod colors;
 mod config;
+mod history;
 mod pane;
 mod tab;
 mod theme;
@@ -139,6 +140,9 @@ struct App {
     update_checked: bool,
     /// Tracks LLM availability so we notify the user once when it drops.
     llm_was_available: bool,
+    /// Local command history for instant, no-network autocomplete (LLM is only
+    /// a fallback when nothing in history matches).
+    history: history::CommandHistory,
 }
 
 impl App {
@@ -178,6 +182,7 @@ impl App {
             last_top_click: Instant::now(),
             update_checked: false,
             llm_was_available: true,
+            history: history::CommandHistory::load(),
         }
     }
 
@@ -331,6 +336,27 @@ impl App {
         self.ghost_text_debounce = Instant::now();
         self.autocomplete_armed = true;
         self.write_to_focused(bytes);
+    }
+
+    /// Record the command on the current prompt line into local history. Called
+    /// when the user presses Enter so future keystrokes can autocomplete it
+    /// instantly (no network).
+    fn record_command(&mut self) {
+        let typed = self.find_focused_pane_ref().and_then(|pane| {
+            let cx = pane.terminal.cursor_x;
+            let cy = pane.terminal.cursor_y;
+            if cx >= 1 && cy < pane.terminal.grid.len() {
+                let line: String = pane.terminal.grid[cy].iter().take(cx).map(|c| c.c).collect();
+                let t = strip_prompt(&line).trim();
+                if !t.is_empty() {
+                    return Some(t.to_string());
+                }
+            }
+            None
+        });
+        if let Some(cmd) = typed {
+            self.history.record(&cmd);
+        }
     }
 
     fn build_pane_cells(
@@ -1357,6 +1383,12 @@ impl ApplicationHandler for App {
                     }
                 }
 
+                // On Enter, capture the current command line into local history
+                // so it can autocomplete instantly next time.
+                if matches!(event.logical_key, Key::Named(NamedKey::Enter)) {
+                    self.record_command();
+                }
+
                 // Send key to focused pane. Plain text is delivered via IME
                 // (Ime::Commit) instead; here key_to_bytes only yields bytes for
                 // Named keys and Ctrl combos (event.text is None under IME).
@@ -1451,11 +1483,14 @@ impl ApplicationHandler for App {
                     self.llm_was_available = available;
                 }
 
-                // Autocomplete: fire once, 300ms after the user stops typing.
-                // `autocomplete_armed` is set on every keystroke and cleared after firing,
-                // so we don't keep hammering the LLM after a NoCompletion.
-                // Pending requests time out after 5s so a dropped response can't
-                // permanently block future requests.
+                // Autocomplete. Two tiers:
+                //   1. Local history — instant, no network. Tried every frame
+                //      while armed; a hit shows ghost text immediately.
+                //   2. LLM — only when local has no match, debounced 300ms after
+                //      the user stops typing, so we don't hammer the API.
+                // `autocomplete_armed` is set on every keystroke and cleared once
+                // a tier handles the edit. Pending LLM requests time out after 5s
+                // so a dropped response can't permanently block future requests.
                 let pending = matches!(
                     self.pending_autocomplete,
                     Some(t) if t.elapsed() < Duration::from_secs(5)
@@ -1463,34 +1498,44 @@ impl ApplicationHandler for App {
                 if !pending {
                     self.pending_autocomplete = None;
                 }
-                if self.autocomplete_armed
-                    && self.ghost_text.is_none()
-                    && !pending
-                    && self.ghost_text_debounce.elapsed() > Duration::from_millis(300)
-                {
-                    if let Some(pane) = self.find_focused_pane_ref() {
+                if self.autocomplete_armed && self.ghost_text.is_none() && !pending {
+                    // Extract the typed prefix (and LLM context) first, so the
+                    // pane borrow is released before touching `self.history`.
+                    let ctx = self.find_focused_pane_ref().and_then(|pane| {
                         let cx = pane.terminal.cursor_x;
                         let cy = pane.terminal.cursor_y;
                         if cx >= 1 && cy < pane.terminal.grid.len() {
-                            let row = &pane.terminal.grid[cy];
-                            let line: String = row.iter().take(cx).map(|c| c.c).collect();
-                            let typed = strip_prompt(&line);
+                            let line: String =
+                                pane.terminal.grid[cy].iter().take(cx).map(|c| c.c).collect();
+                            let typed = strip_prompt(&line).trim().to_string();
                             if !typed.is_empty() {
-                                let typed = typed.to_string();
+                                let recent = recent_history(&pane.terminal.grid, cy, 10);
+                                return Some((typed, recent));
+                            }
+                        }
+                        None
+                    });
+
+                    match ctx {
+                        None => self.autocomplete_armed = false,
+                        Some((typed, recent)) => {
+                            // Tier 1: instant local history match.
+                            if let Some(suffix) = self.history.suggest(&typed) {
+                                self.ghost_text = Some(suffix);
+                                self.autocomplete_armed = false;
+                            } else if self.ghost_text_debounce.elapsed()
+                                > Duration::from_millis(300)
+                            {
+                                // Tier 2: LLM fallback, debounced.
                                 let cwd = std::env::current_dir()
                                     .map(|p| p.display().to_string())
                                     .unwrap_or_else(|_| ".".to_string());
-                                let history = recent_history(&pane.terminal.grid, cy, 10);
                                 if let Some(ref ai_client) = self.ai_client {
-                                    ai_client.autocomplete(&typed, &cwd, &history);
+                                    ai_client.autocomplete(&typed, &cwd, &recent);
                                     self.pending_autocomplete = Some(Instant::now());
                                     self.autocomplete_armed = false;
                                 }
-                            } else {
-                                self.autocomplete_armed = false;
                             }
-                        } else {
-                            self.autocomplete_armed = false;
                         }
                     }
                 }
