@@ -162,6 +162,17 @@ impl App {
         theme::tokens::TAB_STRIP_HEIGHT + theme::tokens::TAB_STRIP_BORDER
     }
 
+    /// Return the effective cursor style, giving the user config priority over
+    /// whatever the terminal program requested via escape sequence.
+    fn effective_cursor_style(&self, terminal_style: CursorStyle) -> CursorStyle {
+        match self.config.cursor.style.as_str() {
+            "bar" => CursorStyle::Bar,
+            "underline" => CursorStyle::Underline,
+            "block" => CursorStyle::Block,
+            _ => terminal_style, // unknown value → respect terminal
+        }
+    }
+
     /// Smooth fade opacity for the cursor, sine-cycling between CURSOR_FADE_MIN and 1.0.
     fn cursor_opacity(&self) -> f32 {
         let elapsed = self.cursor_blink_start.elapsed().as_millis();
@@ -266,7 +277,7 @@ impl App {
                             && row_idx == pane.terminal.cursor_y
                             && col_idx == pane.terminal.cursor_x
                         {
-                            match pane.terminal.cursor_style {
+                            match self.effective_cursor_style(pane.terminal.cursor_style) {
                                 CursorStyle::Block => {
                                     fg = self.theme.bg;
                                     let mut c = self.theme.cursor;
@@ -1209,6 +1220,13 @@ impl ApplicationHandler for App {
 
                 // Pre-compute values that require &self before we mutably borrow self.renderer
                 let tab_bar_h = self.tab_bar_pixel_height();
+                // Config-level cursor style override (resolved before the renderer mutable borrow)
+                let config_cursor_style: Option<CursorStyle> = match self.config.cursor.style.as_str() {
+                    "bar" => Some(CursorStyle::Bar),
+                    "underline" => Some(CursorStyle::Underline),
+                    "block" => Some(CursorStyle::Block),
+                    _ => None,
+                };
 
                 // Now borrow renderer mutably for vertex building
                 let renderer = self.renderer.as_mut().unwrap();
@@ -1282,7 +1300,18 @@ impl ApplicationHandler for App {
                     let (cw_px, ch_px) = renderer.cell_size();
                     let cx_pos = rect.x + pane.terminal.cursor_x as f32 * cw_px;
                     let cy_pos = rect.y + pane.terminal.cursor_y as f32 * ch_px;
-                    renderer.build_rect_outline(cx_pos, cy_pos, cw_px, ch_px, 1.0, self.theme.cursor, &mut vertices);
+                    let style = config_cursor_style.unwrap_or(pane.terminal.cursor_style);
+                    match style {
+                        CursorStyle::Bar => {
+                            renderer.build_rect(cx_pos, cy_pos, 2.0, ch_px, self.theme.cursor, &mut vertices);
+                        }
+                        CursorStyle::Underline => {
+                            renderer.build_rect(cx_pos, cy_pos + ch_px - 2.0, cw_px, 2.0, self.theme.cursor, &mut vertices);
+                        }
+                        CursorStyle::Block => {
+                            renderer.build_rect_outline(cx_pos, cy_pos, cw_px, ch_px, 1.0, self.theme.cursor, &mut vertices);
+                        }
+                    }
                 }
 
                 // Dividers between panes

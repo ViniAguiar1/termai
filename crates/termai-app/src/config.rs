@@ -8,6 +8,7 @@ pub struct Config {
     pub window: WindowConfig,
     pub terminal: TerminalConfig,
     pub theme: ThemeConfig,
+    pub cursor: CursorConfig,
 }
 
 #[derive(Deserialize, Debug)]
@@ -43,6 +44,18 @@ pub struct ThemeConfig {
     pub foreground: String,
 }
 
+#[derive(Deserialize, Debug)]
+#[serde(default)]
+pub struct CursorConfig {
+    pub style: String,
+}
+
+impl Default for CursorConfig {
+    fn default() -> Self {
+        Self { style: "block".to_string() }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -50,6 +63,7 @@ impl Default for Config {
             window: WindowConfig::default(),
             terminal: TerminalConfig::default(),
             theme: ThemeConfig::default(),
+            cursor: CursorConfig::default(),
         }
     }
 }
