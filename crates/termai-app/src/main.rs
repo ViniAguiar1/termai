@@ -133,6 +133,8 @@ struct App {
     dragging_divider: Option<u64>,
     /// Split id whose divider the mouse is hovering (for highlight + cursor icon).
     hovered_divider: Option<u64>,
+    /// Last click time in the top title-bar strip, for double-click-to-zoom.
+    last_top_click: Instant,
 }
 
 impl App {
@@ -169,6 +171,7 @@ impl App {
             leader_armed: None,
             dragging_divider: None,
             hovered_divider: None,
+            last_top_click: Instant::now(),
         }
     }
 
@@ -806,6 +809,24 @@ impl ApplicationHandler for App {
                                 return;
                             }
 
+                            // Double-click in the top title-bar strip zooms the window
+                            // (macOS default). The fullsize content view covers the real
+                            // title bar, so we emulate it here.
+                            if (self.mouse_pos.1 as f32) < self.tab_bar_pixel_height() {
+                                let now = Instant::now();
+                                if now.duration_since(self.last_top_click)
+                                    < Duration::from_millis(400)
+                                {
+                                    if let Some(ref window) = self.window {
+                                        window.set_maximized(!window.is_maximized());
+                                    }
+                                    self.last_top_click = now - Duration::from_secs(1);
+                                } else {
+                                    self.last_top_click = now;
+                                }
+                                return;
+                            }
+
                             // Start dragging a pane divider if the press landed on one.
                             if let Some(div) = self.find_divider_at(self.mouse_pos.0, self.mouse_pos.1) {
                                 self.dragging_divider = Some(div.split_id);
@@ -1292,8 +1313,6 @@ impl ApplicationHandler for App {
                     return;
                 }
 
-                self.selection = None;
-
                 // Ghost text acceptance: Tab or Right arrow accepts the suggestion
                 if self.ghost_text.is_some() {
                     match &event.logical_key {
@@ -1319,7 +1338,10 @@ impl ApplicationHandler for App {
                 if let Some(pane) = tab.root.find_pane(id) {
                     let bytes = key_to_bytes(&event.logical_key, &event.text);
                     if !bytes.is_empty() {
-                        // Dismiss AI overlay on new input
+                        // Real input: clear any selection, dismiss AI overlay.
+                        // (Done here rather than for every key event so modifier
+                        // presses like Cmd don't wipe the selection before Cmd+C.)
+                        self.selection = None;
                         self.ai_overlay = None;
                         self.ghost_text_debounce = Instant::now();
                         self.autocomplete_armed = true;
