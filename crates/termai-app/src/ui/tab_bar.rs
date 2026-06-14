@@ -61,6 +61,94 @@ pub fn hit_test(tabs: &[TabRect], px: f32, py: f32) -> Option<usize> {
     None
 }
 
+/// Action buttons drawn in the strip to the right of the tabs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ButtonKind {
+    NewTab,
+    SplitRight,
+    SplitDown,
+}
+
+#[derive(Debug, Clone)]
+pub struct StripButton {
+    pub kind: ButtonKind,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+/// Lay out the action buttons immediately to the right of the last tab. Each is
+/// a square hit area the height of the strip. All values are physical px.
+pub fn layout_buttons(tabs: &[TabRect], strip_height: f32, scale: f32) -> Vec<StripButton> {
+    let size = strip_height;
+    let mut x = tabs.last().map(|t| t.x + t.w).unwrap_or(0.0) + 4.0 * scale;
+    let mut out = Vec::with_capacity(3);
+    for kind in [
+        ButtonKind::NewTab,
+        ButtonKind::SplitRight,
+        ButtonKind::SplitDown,
+    ] {
+        out.push(StripButton {
+            kind,
+            x,
+            y: 0.0,
+            w: size,
+            h: strip_height,
+        });
+        x += size;
+    }
+    out
+}
+
+/// Hit test the action buttons.
+pub fn hit_test_button(buttons: &[StripButton], px: f32, py: f32) -> Option<ButtonKind> {
+    buttons
+        .iter()
+        .find(|b| px >= b.x && px < b.x + b.w && py >= b.y && py < b.y + b.h)
+        .map(|b| b.kind)
+}
+
+/// Draw the action-button icons (plus / split glyphs) as crisp rects so they
+/// match the minimal chrome and don't depend on the font atlas.
+pub fn render_buttons(
+    buttons: &[StripButton],
+    hovered: Option<ButtonKind>,
+    scale: f32,
+    renderer: &Renderer,
+    vertices: &mut Vec<Vertex>,
+) {
+    for b in buttons {
+        let color = if hovered == Some(b.kind) {
+            tokens::TEXT_PRIMARY
+        } else {
+            tokens::TEXT_DIM
+        };
+        let icon = (b.h * 0.4).round();
+        let th = (1.5 * scale).max(1.0);
+        let cx = b.x + b.w / 2.0;
+        let cy = b.y + b.h / 2.0;
+        let half = icon / 2.0;
+        match b.kind {
+            ButtonKind::NewTab => {
+                // Plus sign.
+                renderer.build_rect(cx - half, cy - th / 2.0, icon, th, color, vertices);
+                renderer.build_rect(cx - th / 2.0, cy - half, th, icon, color, vertices);
+            }
+            ButtonKind::SplitRight => {
+                // Square with a vertical divider (two panes side by side).
+                renderer.build_rect_outline(cx - half, cy - half, icon, icon, th, color, vertices);
+                renderer.build_rect(cx - th / 2.0, cy - half, th, icon, color, vertices);
+            }
+            ButtonKind::SplitDown => {
+                // Square with a horizontal divider (two panes stacked).
+                renderer.build_rect_outline(cx - half, cy - half, icon, icon, th, color, vertices);
+                renderer.build_rect(cx - half, cy - th / 2.0, icon, th, color, vertices);
+            }
+        }
+    }
+}
+
 pub struct TabBarRenderInput<'a> {
     pub tabs: &'a [TabRect],
     pub active_index: usize,

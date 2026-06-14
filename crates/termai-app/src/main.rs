@@ -195,15 +195,11 @@ impl App {
     }
 
     fn tab_bar_pixel_height(&self) -> f32 {
-        // With 2+ tabs we show the strip; traffic lights sit beside the first tab.
-        // With 1 tab we hide the strip but still keep clear space at the top for
-        // the macOS title-bar controls on fullsize-content-view windows.
-        let logical = if self.tab_bar.tab_count() > 1 {
-            theme::tokens::TAB_STRIP_HEIGHT + theme::tokens::TAB_STRIP_BORDER
-        } else {
-            theme::tokens::TITLE_BAR_RESERVE
-        };
-        logical * self.scale_factor
+        // The strip is always shown: it carries the tabs, the new-tab/split
+        // buttons, and the cwd/git readout, and leaves room beside the macOS
+        // traffic lights. (Traffic-light clearance is handled horizontally via
+        // TRAFFIC_LIGHTS_RESERVE.)
+        (theme::tokens::TAB_STRIP_HEIGHT + theme::tokens::TAB_STRIP_BORDER) * self.scale_factor
     }
 
     /// Return the effective cursor style, giving the user config priority over
@@ -437,11 +433,9 @@ impl App {
             .collect()
     }
 
-    /// Check if a click is in the tab bar and switch tabs if so. Returns true if handled.
+    /// Check if a click is in the tab strip (tab, action button) and act on it.
+    /// Returns true if handled.
     fn handle_tab_bar_click(&mut self, px: f64, py: f64) -> bool {
-        if self.tab_bar.tab_count() <= 1 {
-            return false;
-        }
         // winit reports CursorMoved.position in PHYSICAL pixels, so mouse_pos is
         // already physical — do NOT multiply by scale_factor again (the token
         // sizes below are the ones that need the scale applied).
@@ -460,12 +454,35 @@ impl App {
             s,
         );
         let sx = px as f32;
-        if let Some(idx) = ui::tab_bar::hit_test(&tab_layout, sx, sy) {
-            self.tab_bar.switch_to(idx);
+
+        // Action buttons (work with any tab count).
+        let buttons = ui::tab_bar::layout_buttons(&tab_layout, strip_h, s);
+        if let Some(kind) = ui::tab_bar::hit_test_button(&buttons, sx, sy) {
+            match kind {
+                ui::tab_bar::ButtonKind::NewTab => {
+                    if let Some(ref renderer) = self.renderer {
+                        let (cols, rows) = renderer.grid_size();
+                        self.tab_bar.new_tab(cols as usize, rows as usize);
+                    }
+                }
+                ui::tab_bar::ButtonKind::SplitRight => self.split_focused(SplitDir::Vertical),
+                ui::tab_bar::ButtonKind::SplitDown => self.split_focused(SplitDir::Horizontal),
+            }
             if let Some(ref window) = self.window {
                 window.request_redraw();
             }
             return true;
+        }
+
+        // Tab switching needs more than one tab.
+        if self.tab_bar.tab_count() > 1 {
+            if let Some(idx) = ui::tab_bar::hit_test(&tab_layout, sx, sy) {
+                self.tab_bar.switch_to(idx);
+                if let Some(ref window) = self.window {
+                    window.request_redraw();
+                }
+                return true;
+            }
         }
         false
     }
@@ -1672,18 +1689,15 @@ impl ApplicationHandler for App {
                 let titles = self.tab_titles();
                 let strip_width_pre = self.renderer.as_ref().map(|r| r.width() as f32).unwrap_or(0.0);
                 let s = self.scale_factor;
-                // Strip only renders with 2+ tabs.
-                let tab_layout = if self.tab_bar.tab_count() > 1 {
-                    ui::tab_bar::layout_tabs(
-                        self.tab_bar.tab_count(),
-                        strip_width_pre,
-                        theme::tokens::TAB_STRIP_HEIGHT * s,
-                        theme::tokens::TRAFFIC_LIGHTS_RESERVE * s,
-                        s,
-                    )
-                } else {
-                    vec![]
-                };
+                // The strip always renders (it hosts tabs, action buttons, and
+                // the cwd/git readout).
+                let tab_layout = ui::tab_bar::layout_tabs(
+                    self.tab_bar.tab_count(),
+                    strip_width_pre,
+                    theme::tokens::TAB_STRIP_HEIGHT * s,
+                    theme::tokens::TRAFFIC_LIGHTS_RESERVE * s,
+                    s,
+                );
                 let (cx, cy, cw, ch) = self.content_area();
                 let gutter_px = theme::tokens::PANE_GUTTER * self.scale_factor;
                 let tab = &self.tab_bar.tabs[self.tab_bar.active];
@@ -1735,6 +1749,18 @@ impl ApplicationHandler for App {
 
                 // Pre-compute values that require &self before we mutably borrow self.renderer
                 let tab_bar_h = self.tab_bar_pixel_height();
+                // Action buttons + which one the mouse is hovering (for highlight).
+                let strip_h_px = theme::tokens::TAB_STRIP_HEIGHT * s;
+                let strip_buttons = ui::tab_bar::layout_buttons(&tab_layout, strip_h_px, s);
+                let hovered_button = if (self.mouse_pos.1 as f32) < strip_h_px {
+                    ui::tab_bar::hit_test_button(
+                        &strip_buttons,
+                        self.mouse_pos.0 as f32,
+                        self.mouse_pos.1 as f32,
+                    )
+                } else {
+                    None
+                };
                 // Config-level cursor style override (resolved before the renderer mutable borrow)
                 let config_cursor_style: Option<CursorStyle> = match self.config.cursor.style.as_str() {
                     "bar" => Some(CursorStyle::Bar),
@@ -1766,6 +1792,13 @@ impl ApplicationHandler for App {
                         scale: self.scale_factor,
                     };
                     ui::tab_bar::render_tab_bar(&input, renderer, &mut vertices, &mut chrome_vertices);
+                    ui::tab_bar::render_buttons(
+                        &strip_buttons,
+                        hovered_button,
+                        self.scale_factor,
+                        renderer,
+                        &mut vertices,
+                    );
 
                     {
                         let state = match self.ai_client.as_ref() {
