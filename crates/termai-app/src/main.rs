@@ -603,67 +603,127 @@ impl App {
 
     /// Check if the focused pane's recent output contains an error pattern.
     /// If so, send it to the AI engine for analysis.
-    fn check_for_errors(&mut self) {
-        // Cooldown: wait at least 2 seconds between analyses
-        if self.ai_last_analysis.elapsed() < Duration::from_secs(2) {
-            return;
-        }
-
-        // Don't analyze if overlay is already showing
-        if self.ai_overlay.is_some() {
-            return;
-        }
-
-        let ai_client = match self.ai_client {
-            Some(ref c) => c,
-            None => return,
-        };
-
-        let tab = &mut self.tab_bar.tabs[self.tab_bar.active];
-        let focused_id = tab.focused_pane_id;
-        let pane = match tab.root.find_pane(focused_id) {
-            Some(p) => p,
-            None => return,
-        };
-
+    /// Scan the focused pane's recent output for a known error pattern.
+    /// Returns `(command, error_line)` for the first match, else `None`.
+    fn detect_error(&self) -> Option<(String, String)> {
+        let pane = self.find_focused_pane_ref()?;
         if pane.recent_output.is_empty() {
-            return;
+            return None;
         }
-
         let output_lower = pane.recent_output.to_lowercase();
-
-        // Check for any known error pattern
-        let has_error = ERROR_PATTERNS.iter().any(|p| output_lower.contains(p));
-        if !has_error {
-            return;
+        if !ERROR_PATTERNS.iter().any(|p| output_lower.contains(p)) {
+            return None;
         }
 
-        // Try to extract the last command line from the output.
-        // Heuristic: look for the line containing the error and the line before it.
+        // Heuristic: the error line plus the line before it (often the command).
         let lines: Vec<&str> = pane.recent_output.lines().collect();
         let mut error_line = "";
         let mut command_line = "";
-
         for (i, line) in lines.iter().enumerate() {
             let lower = line.to_lowercase();
             if ERROR_PATTERNS.iter().any(|p| lower.contains(p)) {
                 error_line = line;
-                // The command is often the line before the error, or embedded in it
-                // e.g., "zsh: command not found: gi" — extract "gi"
-                // e.g., "bash: nvm: command not found" — extract "nvm"
                 if i > 0 {
                     command_line = lines[i - 1];
                 }
                 break;
             }
         }
-
-        // Extract the command from shell error messages
         let command = extract_command_from_error(error_line, command_line);
+        Some((command, error_line.to_string()))
+    }
 
-        ai_client.analyze(&command, error_line, 127);
-        self.ai_last_analysis = Instant::now();
-        pane.clear_recent_output();
+    /// Run the AI assistant now, ignoring the cooldown (AI ▸ Explain Last Error).
+    fn explain_last_error(&mut self) {
+        if let Some((command, error_line)) = self.detect_error() {
+            if let Some(ref c) = self.ai_client {
+                c.analyze(&command, &error_line, 127);
+                self.ai_last_analysis = Instant::now();
+            }
+        }
+    }
+
+    /// Open a URL in the user's default handler (Help menu, update links).
+    fn open_url(&self, url: &str) {
+        #[cfg(target_os = "macos")]
+        let opener = "open";
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let opener = "xdg-open";
+        #[cfg(windows)]
+        let opener = "explorer";
+        let _ = std::process::Command::new(opener).arg(url).spawn();
+    }
+
+    /// Dispatch a native menu click to the matching app action. Items that share
+    /// an accelerator with a keyboard shortcut reuse the same methods.
+    #[cfg(target_os = "macos")]
+    fn handle_menu(&mut self, id: &muda::MenuId, event_loop: &ActiveEventLoop) {
+        use macos_menu::*;
+        const REPO: &str = "https://github.com/ViniAguiar1/termai";
+        if id == MENU_COPY {
+            self.copy_selection();
+        } else if id == MENU_PASTE {
+            self.paste();
+        } else if id == MENU_SELECT_ALL {
+            self.select_all();
+        } else if id == MENU_ZOOM_IN {
+            self.zoom_in();
+        } else if id == MENU_ZOOM_OUT {
+            self.zoom_out();
+        } else if id == MENU_ZOOM_RESET {
+            self.zoom_reset();
+        } else if id == MENU_NEW_TAB {
+            if let Some(ref renderer) = self.renderer {
+                let (cols, rows) = renderer.grid_size();
+                self.tab_bar.new_tab(cols as usize, rows as usize);
+            }
+        } else if id == MENU_CLOSE_TAB {
+            let tab = self.tab_bar.active_tab();
+            if !tab.close_focused() && !self.tab_bar.close_active_tab() {
+                event_loop.exit();
+            }
+        } else if id == MENU_SPLIT_V {
+            self.split_focused(SplitDir::Vertical);
+        } else if id == MENU_SPLIT_H {
+            self.split_focused(SplitDir::Horizontal);
+        } else if id == MENU_CLEAR {
+            self.write_to_focused(&[0x0c]); // Ctrl+L — clear screen
+        } else if id == MENU_AI_EXPLAIN {
+            self.explain_last_error();
+        } else if id == MENU_AI_DISMISS {
+            self.ai_overlay = None;
+        } else if id == MENU_HELP_DOCS {
+            self.open_url(&format!("{REPO}#readme"));
+        } else if id == MENU_HELP_SITE {
+            self.open_url(REPO);
+        } else if id == MENU_HELP_ISSUE {
+            self.open_url(&format!("{REPO}/issues/new"));
+        }
+    }
+
+    fn check_for_errors(&mut self) {
+        // Cooldown: wait at least 2 seconds between analyses
+        if self.ai_last_analysis.elapsed() < Duration::from_secs(2) {
+            return;
+        }
+        // Don't analyze if overlay is already showing
+        if self.ai_overlay.is_some() {
+            return;
+        }
+        if self.ai_client.is_none() {
+            return;
+        }
+        if let Some((command, error_line)) = self.detect_error() {
+            if let Some(ref c) = self.ai_client {
+                c.analyze(&command, &error_line, 127);
+            }
+            self.ai_last_analysis = Instant::now();
+            // Clear so the same error isn't re-analyzed on the next frame.
+            let id = self.tab_bar.active_tab().focused_pane_id;
+            if let Some(p) = self.tab_bar.active_tab().root.find_pane(id) {
+                p.clear_recent_output();
+            }
+        }
     }
 
     fn paste(&mut self) {
@@ -1459,22 +1519,11 @@ impl ApplicationHandler for App {
 
             WindowEvent::RedrawRequested => {
                 // Drain native menu clicks. Items that mirror keyboard shortcuts
-                // (Copy/Paste, font zoom) reuse the same methods as the key path.
+                // (Copy/Paste, splits, font zoom) reuse the same methods as the
+                // key path; the keyboard handlers remain as a fallback.
                 #[cfg(target_os = "macos")]
                 while let Ok(ev) = muda::MenuEvent::receiver().try_recv() {
-                    if ev.id == macos_menu::MENU_COPY {
-                        self.copy_selection();
-                    } else if ev.id == macos_menu::MENU_PASTE {
-                        self.paste();
-                    } else if ev.id == macos_menu::MENU_SELECT_ALL {
-                        self.select_all();
-                    } else if ev.id == macos_menu::MENU_ZOOM_IN {
-                        self.zoom_in();
-                    } else if ev.id == macos_menu::MENU_ZOOM_OUT {
-                        self.zoom_out();
-                    } else if ev.id == macos_menu::MENU_ZOOM_RESET {
-                        self.zoom_reset();
-                    }
+                    self.handle_menu(&ev.id, event_loop);
                 }
 
                 // Poll all panes in active tab

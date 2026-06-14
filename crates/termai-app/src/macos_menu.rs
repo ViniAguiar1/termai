@@ -18,10 +18,28 @@ pub const MENU_SELECT_ALL: &str = "select_all";
 pub const MENU_ZOOM_IN: &str = "zoom_in";
 pub const MENU_ZOOM_OUT: &str = "zoom_out";
 pub const MENU_ZOOM_RESET: &str = "zoom_reset";
+pub const MENU_NEW_TAB: &str = "new_tab";
+pub const MENU_CLOSE_TAB: &str = "close_tab";
+pub const MENU_SPLIT_V: &str = "split_v";
+pub const MENU_SPLIT_H: &str = "split_h";
+pub const MENU_CLEAR: &str = "clear";
+pub const MENU_AI_EXPLAIN: &str = "ai_explain";
+pub const MENU_AI_DISMISS: &str = "ai_dismiss";
+pub const MENU_HELP_DOCS: &str = "help_docs";
+pub const MENU_HELP_SITE: &str = "help_site";
+pub const MENU_HELP_ISSUE: &str = "help_issue";
 
 /// `⌘ + key` accelerator (SUPER maps to Command on macOS).
 fn cmd(key: Code) -> Option<Accelerator> {
     Some(Accelerator::new(Some(Modifiers::SUPER), key))
+}
+
+/// `⌘⇧ + key` accelerator.
+fn cmd_shift(key: Code) -> Option<Accelerator> {
+    Some(Accelerator::new(
+        Some(Modifiers::SUPER | Modifiers::SHIFT),
+        key,
+    ))
 }
 
 /// Build the full menu and install it as the application's main menu. Returns
@@ -51,6 +69,23 @@ pub fn build() -> Menu {
         &PredefinedMenuItem::quit(None),
     ]);
 
+    // Terminal menu — tabs, splits, and clear (all routed via MenuEvent).
+    let terminal = Submenu::new("Terminal", true);
+    let new_tab = MenuItem::with_id(MENU_NEW_TAB, "New Tab", true, cmd(Code::KeyT));
+    let close_tab = MenuItem::with_id(MENU_CLOSE_TAB, "Close Tab", true, cmd(Code::KeyW));
+    let split_v = MenuItem::with_id(MENU_SPLIT_V, "Split Right", true, cmd(Code::KeyD));
+    let split_h = MenuItem::with_id(MENU_SPLIT_H, "Split Down", true, cmd_shift(Code::KeyD));
+    let clear = MenuItem::with_id(MENU_CLEAR, "Clear", true, cmd(Code::KeyK));
+    let _ = terminal.append_items(&[
+        &new_tab,
+        &close_tab,
+        &PredefinedMenuItem::separator(),
+        &split_v,
+        &split_h,
+        &PredefinedMenuItem::separator(),
+        &clear,
+    ]);
+
     // Edit menu — custom items routed back to the app through MenuEvent so they
     // reuse the existing clipboard/selection logic on our wgpu surface.
     let edit = Submenu::new("Edit", true);
@@ -77,6 +112,17 @@ pub fn build() -> Menu {
         &PredefinedMenuItem::fullscreen(None),
     ]);
 
+    // AI menu — manual triggers for the built-in assistant.
+    let ai = Submenu::new("AI", true);
+    let ai_explain = MenuItem::with_id(
+        MENU_AI_EXPLAIN,
+        "Explain Last Error",
+        true,
+        cmd_shift(Code::KeyA),
+    );
+    let ai_dismiss = MenuItem::with_id(MENU_AI_DISMISS, "Dismiss Suggestion", true, None);
+    let _ = ai.append_items(&[&ai_explain, &ai_dismiss]);
+
     // Window menu — native window management.
     let window = Submenu::new("Window", true);
     let _ = window.append_items(&[
@@ -86,9 +132,17 @@ pub fn build() -> Menu {
         &PredefinedMenuItem::bring_all_to_front(None),
     ]);
 
-    let _ = menu.append_items(&[&app, &edit, &view, &window]);
-    // Let AppKit manage the standard window list under the Window menu.
+    // Help menu — external links (opened via MenuEvent → `open <url>`).
+    let help = Submenu::new("Help", true);
+    let docs = MenuItem::with_id(MENU_HELP_DOCS, "termAI Documentation", true, None);
+    let site = MenuItem::with_id(MENU_HELP_SITE, "termAI Website", true, None);
+    let issue = MenuItem::with_id(MENU_HELP_ISSUE, "Report an Issue", true, None);
+    let _ = help.append_items(&[&docs, &site, &PredefinedMenuItem::separator(), &issue]);
+
+    let _ = menu.append_items(&[&app, &terminal, &edit, &view, &ai, &window, &help]);
+    // Let AppKit manage the standard window list / Help search field.
     window.set_as_windows_menu_for_nsapp();
+    help.set_as_help_menu_for_nsapp();
     menu.init_for_nsapp();
     menu
 }
