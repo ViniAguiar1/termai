@@ -158,9 +158,11 @@ impl App {
         // Strip is always present so the chrome reads as part of the window.
         // On macOS the strip also absorbs the title-bar reserve so traffic
         // lights sit ABOVE the tabs row rather than overlapping content.
-        theme::tokens::TITLE_BAR_RESERVE
+        // Tokens are in LOGICAL pixels; multiply by scale for physical.
+        (theme::tokens::TITLE_BAR_RESERVE
             + theme::tokens::TAB_STRIP_HEIGHT
-            + theme::tokens::TAB_STRIP_BORDER
+            + theme::tokens::TAB_STRIP_BORDER)
+            * self.scale_factor
     }
 
     /// Return the effective cursor style, giving the user config priority over
@@ -208,10 +210,11 @@ impl App {
             let h = renderer.height() as f32;
             let tab_h = self.tab_bar_pixel_height();
             let search_h = self.search_bar_pixel_height();
-            let x = theme::tokens::CONTENT_PADDING_LEFT;
-            let y = tab_h + theme::tokens::CONTENT_PADDING_TOP;
-            let cw = w - x - theme::tokens::CONTENT_PADDING_RIGHT;
-            let ch = h - y - search_h - theme::tokens::CONTENT_PADDING_BOTTOM;
+            let s = self.scale_factor;
+            let x = theme::tokens::CONTENT_PADDING_LEFT * s;
+            let y = tab_h + theme::tokens::CONTENT_PADDING_TOP * s;
+            let cw = w - x - theme::tokens::CONTENT_PADDING_RIGHT * s;
+            let ch = h - y - search_h - theme::tokens::CONTENT_PADDING_BOTTOM * s;
             (x, y, cw, ch)
         } else {
             (0.0, 0.0, 0.0, 0.0)
@@ -311,11 +314,13 @@ impl App {
             return false;
         }
         let strip_width = self.renderer.as_ref().map(|r| r.width() as f32).unwrap_or(0.0);
+        let s = self.scale_factor;
         let tab_layout = ui::tab_bar::layout_tabs(
             self.tab_bar.tab_count(),
             strip_width,
-            theme::tokens::TAB_STRIP_HEIGHT,
-            theme::tokens::TRAFFIC_LIGHTS_RESERVE,
+            theme::tokens::TAB_STRIP_HEIGHT * s,
+            theme::tokens::TRAFFIC_LIGHTS_RESERVE * s,
+            s,
         );
         let sx = px as f32 * self.scale_factor;
         if let Some(idx) = ui::tab_bar::hit_test(&tab_layout, sx, sy) {
@@ -798,11 +803,13 @@ impl ApplicationHandler for App {
                     let tab_h = self.tab_bar_pixel_height();
                     if tab_h > 0.0 && sy < tab_h {
                         let strip_width = self.renderer.as_ref().map(|r| r.width() as f32).unwrap_or(0.0);
+                        let s = self.scale_factor;
                         let tab_layout = ui::tab_bar::layout_tabs(
                             self.tab_bar.tab_count(),
                             strip_width,
-                            theme::tokens::TAB_STRIP_HEIGHT,
-                            theme::tokens::TRAFFIC_LIGHTS_RESERVE,
+                            theme::tokens::TAB_STRIP_HEIGHT * s,
+                            theme::tokens::TRAFFIC_LIGHTS_RESERVE * s,
+                            s,
                         );
                         ui::tab_bar::hit_test(&tab_layout, sx, sy)
                     } else {
@@ -1164,11 +1171,13 @@ impl ApplicationHandler for App {
                 // Build all cell data first (before borrowing renderer mutably)
                 let titles = self.tab_titles();
                 let strip_width_pre = self.renderer.as_ref().map(|r| r.width() as f32).unwrap_or(0.0);
+                let s = self.scale_factor;
                 let tab_layout = ui::tab_bar::layout_tabs(
                     self.tab_bar.tab_count(),
                     strip_width_pre,
-                    theme::tokens::TAB_STRIP_HEIGHT,
-                    theme::tokens::TRAFFIC_LIGHTS_RESERVE,
+                    theme::tokens::TAB_STRIP_HEIGHT * s,
+                    theme::tokens::TRAFFIC_LIGHTS_RESERVE * s,
+                    s,
                 );
                 let (cx, cy, cw, ch) = self.content_area();
                 let tab = &self.tab_bar.tabs[self.tab_bar.active];
@@ -1245,6 +1254,7 @@ impl ApplicationHandler for App {
                         hover_progress,
                         titles: &titles,
                         strip_width,
+                        scale: self.scale_factor,
                     };
                     ui::tab_bar::render_tab_bar(&input, renderer, &mut vertices, &mut chrome_vertices);
 
@@ -1268,6 +1278,7 @@ impl ApplicationHandler for App {
                             state,
                             renderer.width() as f32,
                             pulse_t,
+                            self.scale_factor,
                             renderer,
                             &mut vertices,
                         );

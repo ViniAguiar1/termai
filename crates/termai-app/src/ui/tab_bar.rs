@@ -14,27 +14,31 @@ pub struct TabRect {
 }
 
 /// Compute the layout for N tabs given the strip's available width.
-/// Returns one TabRect per tab. Reserves `traffic_lights_reserve` pixels on the left
-/// and the connection indicator area on the right.
+/// All length parameters and tokens are in PHYSICAL pixels — caller multiplies
+/// logical dimensions by `scale` before passing.
 pub fn layout_tabs(
     tab_count: usize,
     strip_width: f32,
     strip_height: f32,
     traffic_lights_reserve: f32,
+    scale: f32,
 ) -> Vec<TabRect> {
     if tab_count == 0 {
         return vec![];
     }
     let available = strip_width
         - traffic_lights_reserve
-        - tokens::CONNECTION_INDICATOR_SIZE
-        - tokens::CONNECTION_INDICATOR_RIGHT_PAD;
+        - tokens::CONNECTION_INDICATOR_SIZE * scale
+        - tokens::CONNECTION_INDICATOR_RIGHT_PAD * scale;
     let mut per_tab = available / tab_count as f32;
-    per_tab = per_tab.clamp(tokens::TAB_MIN_WIDTH_ABSOLUTE, tokens::TAB_MAX_WIDTH);
+    per_tab = per_tab.clamp(
+        tokens::TAB_MIN_WIDTH_ABSOLUTE * scale,
+        tokens::TAB_MAX_WIDTH * scale,
+    );
 
     let mut out = Vec::with_capacity(tab_count);
     let mut x = traffic_lights_reserve;
-    let tab_y = tokens::TITLE_BAR_RESERVE;
+    let tab_y = tokens::TITLE_BAR_RESERVE * scale;
     for i in 0..tab_count {
         out.push(TabRect {
             index: i,
@@ -66,6 +70,8 @@ pub struct TabBarRenderInput<'a> {
     pub hover_progress: f32,
     pub titles: &'a [String],
     pub strip_width: f32,
+    /// Display scale (physical pixels per logical pixel).
+    pub scale: f32,
 }
 
 pub fn render_tab_bar(
@@ -74,7 +80,9 @@ pub fn render_tab_bar(
     main_vertices: &mut Vec<Vertex>,
     chrome_vertices: &mut Vec<Vertex>,
 ) {
-    let strip_total_h = tokens::TITLE_BAR_RESERVE + tokens::TAB_STRIP_HEIGHT;
+    let s = input.scale;
+    let strip_total_h = (tokens::TITLE_BAR_RESERVE + tokens::TAB_STRIP_HEIGHT) * s;
+    let border_h = tokens::TAB_STRIP_BORDER * s;
 
     // 1. Strip background (covers the title-bar reserve AND the tab row).
     renderer.build_rect(
@@ -91,7 +99,7 @@ pub fn render_tab_bar(
         0.0,
         strip_total_h,
         input.strip_width,
-        tokens::TAB_STRIP_BORDER,
+        border_h,
         tokens::CHROME_BORDER,
         main_vertices,
     );
@@ -118,10 +126,10 @@ pub fn render_tab_bar(
         // Vertical separator on the right edge of the tab, except for the last tab.
         if tab.index < input.tabs.len() - 1 {
             renderer.build_rect(
-                tab.x + tab.w - tokens::TAB_STRIP_BORDER,
-                tab.y + 6.0,
-                tokens::TAB_STRIP_BORDER,
-                tab.h - 12.0,
+                tab.x + tab.w - border_h,
+                tab.y + 6.0 * s,
+                border_h,
+                tab.h - 12.0 * s,
                 tokens::CHROME_BORDER,
                 main_vertices,
             );
@@ -143,11 +151,12 @@ pub fn render_tab_bar(
 
         // Active tab accent line (bottom 2px) — single colorful detail in the strip.
         if is_active {
+            let accent_h = tokens::TAB_ACTIVE_ACCENT_HEIGHT * s;
             renderer.build_rect(
                 tab.x,
-                tab.y + tab.h - tokens::TAB_ACTIVE_ACCENT_HEIGHT,
+                tab.y + tab.h - accent_h,
                 tab.w,
-                tokens::TAB_ACTIVE_ACCENT_HEIGHT,
+                accent_h,
                 tokens::ACCENT,
                 main_vertices,
             );
@@ -171,7 +180,7 @@ mod tests {
 
     #[test]
     fn three_tabs_split_evenly_with_reserve() {
-        let tabs = layout_tabs(3, 1000.0, 36.0, 78.0);
+        let tabs = layout_tabs(3, 1000.0, 36.0, 78.0, 1.0);
         assert_eq!(tabs.len(), 3);
         // Available = 1000 - 78 - 8 (indicator) - 8 (pad) = 906; per_tab = 302, clamped to 240
         assert_eq!(tabs[0].w, tokens::TAB_MAX_WIDTH);
@@ -181,7 +190,7 @@ mod tests {
 
     #[test]
     fn many_tabs_shrink_to_min() {
-        let tabs = layout_tabs(20, 400.0, 36.0, 0.0);
+        let tabs = layout_tabs(20, 400.0, 36.0, 0.0, 1.0);
         let available = 400.0 - 0.0 - tokens::CONNECTION_INDICATOR_SIZE - tokens::CONNECTION_INDICATOR_RIGHT_PAD;
         let expected = (available / 20.0).clamp(tokens::TAB_MIN_WIDTH_ABSOLUTE, tokens::TAB_MAX_WIDTH);
         assert_eq!(tabs[0].w, expected);
@@ -189,7 +198,7 @@ mod tests {
 
     #[test]
     fn hit_test_returns_correct_index() {
-        let tabs = layout_tabs(3, 1000.0, 36.0, 78.0);
+        let tabs = layout_tabs(3, 1000.0, 36.0, 78.0, 1.0);
         // Click in middle of tab 1 — y must fall inside the tab row, which
         // starts at TITLE_BAR_RESERVE on macOS / 0 elsewhere.
         let mid_x = tabs[1].x + tabs[1].w / 2.0;
@@ -203,7 +212,7 @@ mod tests {
 
     #[test]
     fn zero_tabs_returns_empty() {
-        assert!(layout_tabs(0, 1000.0, 36.0, 78.0).is_empty());
+        assert!(layout_tabs(0, 1000.0, 36.0, 78.0, 1.0).is_empty());
     }
 
     #[test]

@@ -11,17 +11,20 @@ pub enum State {
 }
 
 /// Render the indicator. `pulse_t` is 0.0..1.0 — only used by `Analyzing`.
+/// `scale` is the display scale (physical pixels per logical pixel).
 pub fn render(
     state: State,
     strip_width: f32,
     pulse_t: f32,
+    scale: f32,
     renderer: &Renderer,
     vertices: &mut Vec<Vertex>,
 ) {
-    let size = tokens::CONNECTION_INDICATOR_SIZE;
-    let x = strip_width - size - tokens::CONNECTION_INDICATOR_RIGHT_PAD;
+    let size = tokens::CONNECTION_INDICATOR_SIZE * scale;
+    let x = strip_width - size - tokens::CONNECTION_INDICATOR_RIGHT_PAD * scale;
     // Center the dot vertically within the tabs row (below the title-bar reserve).
-    let y = tokens::TITLE_BAR_RESERVE + (tokens::TAB_STRIP_HEIGHT - size) / 2.0;
+    let y = tokens::TITLE_BAR_RESERVE * scale
+        + (tokens::TAB_STRIP_HEIGHT * scale - size) / 2.0;
 
     match state {
         State::Connected => {
