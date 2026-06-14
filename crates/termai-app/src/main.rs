@@ -2,6 +2,8 @@ mod ai;
 mod colors;
 mod config;
 mod history;
+#[cfg(target_os = "macos")]
+mod macos_menu;
 mod pane;
 mod tab;
 mod theme;
@@ -143,6 +145,10 @@ struct App {
     /// Local command history for instant, no-network autocomplete (LLM is only
     /// a fallback when nothing in history matches).
     history: history::CommandHistory,
+    /// Native macOS menu bar. Kept alive for the app's lifetime (dropping it
+    /// removes the menu). `None` until the window/NSApp exists.
+    #[cfg(target_os = "macos")]
+    menu: Option<muda::Menu>,
 }
 
 impl App {
@@ -183,6 +189,8 @@ impl App {
             update_checked: false,
             llm_was_available: true,
             history: history::CommandHistory::load(),
+            #[cfg(target_os = "macos")]
+            menu: None,
         }
     }
 
@@ -479,6 +487,44 @@ impl App {
             renderer.rebuild_atlas(self.font_size, self.scale_factor);
         }
         self.resize_panes();
+    }
+
+    fn zoom_in(&mut self) {
+        self.font_size = (self.font_size + ZOOM_STEP).min(MAX_FONT_SIZE);
+        self.zoom();
+    }
+
+    fn zoom_out(&mut self) {
+        self.font_size = (self.font_size - ZOOM_STEP).max(MIN_FONT_SIZE);
+        self.zoom();
+    }
+
+    fn zoom_reset(&mut self) {
+        self.font_size = 14.0;
+        self.zoom();
+    }
+
+    /// Select the entire visible grid of the focused pane (Edit ▸ Select All).
+    fn select_all(&mut self) {
+        let dims = self.find_focused_pane_ref().map(|p| {
+            let rows = p.terminal.grid.len();
+            let cols = rows
+                .checked_sub(1)
+                .and_then(|last| p.terminal.grid.get(last))
+                .map(|r| r.len())
+                .unwrap_or(0);
+            (rows, cols)
+        });
+        if let Some((rows, cols)) = dims {
+            if rows > 0 && cols > 0 {
+                self.selection = Some(Selection {
+                    start_col: 0,
+                    start_row: 0,
+                    end_col: cols - 1,
+                    end_row: rows - 1,
+                });
+            }
+        }
     }
 
     fn copy_selection(&mut self) {
@@ -807,6 +853,12 @@ impl ApplicationHandler for App {
         self.tab_bar = TabBar::new(cols as usize, rows as usize);
         self.renderer = Some(renderer);
         self.window = Some(window);
+
+        // Build the native macOS menu now that the NSApplication exists.
+        #[cfg(target_os = "macos")]
+        if self.menu.is_none() {
+            self.menu = Some(macos_menu::build());
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -1209,18 +1261,15 @@ impl ApplicationHandler for App {
                     match &event.logical_key {
                         // Zoom
                         Key::Character(c) if c.as_str() == "=" || c.as_str() == "+" => {
-                            self.font_size = (self.font_size + ZOOM_STEP).min(MAX_FONT_SIZE);
-                            self.zoom();
+                            self.zoom_in();
                             return;
                         }
                         Key::Character(c) if c.as_str() == "-" => {
-                            self.font_size = (self.font_size - ZOOM_STEP).max(MIN_FONT_SIZE);
-                            self.zoom();
+                            self.zoom_out();
                             return;
                         }
                         Key::Character(c) if c.as_str() == "0" => {
-                            self.font_size = 14.0;
-                            self.zoom();
+                            self.zoom_reset();
                             return;
                         }
                         // Split vertical: Cmd+D (alias for the leader's `|`)
@@ -1409,6 +1458,25 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::RedrawRequested => {
+                // Drain native menu clicks. Items that mirror keyboard shortcuts
+                // (Copy/Paste, font zoom) reuse the same methods as the key path.
+                #[cfg(target_os = "macos")]
+                while let Ok(ev) = muda::MenuEvent::receiver().try_recv() {
+                    if ev.id == macos_menu::MENU_COPY {
+                        self.copy_selection();
+                    } else if ev.id == macos_menu::MENU_PASTE {
+                        self.paste();
+                    } else if ev.id == macos_menu::MENU_SELECT_ALL {
+                        self.select_all();
+                    } else if ev.id == macos_menu::MENU_ZOOM_IN {
+                        self.zoom_in();
+                    } else if ev.id == macos_menu::MENU_ZOOM_OUT {
+                        self.zoom_out();
+                    } else if ev.id == macos_menu::MENU_ZOOM_RESET {
+                        self.zoom_reset();
+                    }
+                }
+
                 // Poll all panes in active tab
                 let got_data = self.tab_bar.active_tab().poll();
 
