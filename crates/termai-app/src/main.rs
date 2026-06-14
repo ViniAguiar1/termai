@@ -1234,11 +1234,25 @@ impl ApplicationHandler for App {
                     ui::tab_bar::render_tab_bar(&input, renderer, &mut vertices, &mut chrome_vertices);
 
                     if self.tab_bar.tab_count() > 1 {
-                        // Hardcoded Disconnected for now; Task 18 will wire real state.
+                        let state = match self.ai_client.as_ref() {
+                            Some(c) if c.is_analyzing() => ui::connection_indicator::State::Analyzing,
+                            Some(c) if c.is_connected() => ui::connection_indicator::State::Connected,
+                            _ => ui::connection_indicator::State::Disconnected,
+                        };
+
+                        let pulse_t = if matches!(state, ui::connection_indicator::State::Analyzing) {
+                            let elapsed = self.cursor_blink_start.elapsed().as_millis();
+                            let phase = (elapsed % theme::tokens::PULSE_PERIOD_MS) as f32
+                                / theme::tokens::PULSE_PERIOD_MS as f32;
+                            (phase * std::f32::consts::TAU).sin() * 0.5 + 0.5
+                        } else {
+                            0.0
+                        };
+
                         ui::connection_indicator::render(
-                            ui::connection_indicator::State::Disconnected,
+                            state,
                             renderer.width() as f32,
-                            0.0,
+                            pulse_t,
                             renderer,
                             &mut vertices,
                         );

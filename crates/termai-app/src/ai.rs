@@ -2,6 +2,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -40,6 +42,7 @@ pub struct AiClient {
     stream: Option<UnixStream>,
     pub rx: mpsc::Receiver<AiMessage>,
     tx: mpsc::Sender<AiMessage>,
+    analyzing: Arc<AtomicBool>,
 }
 
 impl AiClient {
@@ -85,6 +88,7 @@ impl AiClient {
             stream,
             rx,
             tx,
+            analyzing: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -106,8 +110,12 @@ impl AiClient {
         );
 
         let tx = self.tx.clone();
+        let analyzing = self.analyzing.clone();
+        analyzing.store(true, Ordering::Relaxed);
         thread::spawn(move || {
-            if let Some(msg) = send_request(stream, &request) {
+            let result = send_request(stream, &request);
+            analyzing.store(false, Ordering::Relaxed);
+            if let Some(msg) = result {
                 let _ = tx.send(msg);
             }
         });
@@ -141,6 +149,16 @@ impl AiClient {
     /// Poll for a received suggestion (non-blocking).
     pub fn poll(&self) -> Option<AiMessage> {
         self.rx.try_recv().ok()
+    }
+
+    /// Whether the IPC socket to the Go AI engine is open.
+    pub fn is_connected(&self) -> bool {
+        self.stream.is_some()
+    }
+
+    /// Whether an analysis request is currently in flight.
+    pub fn is_analyzing(&self) -> bool {
+        self.analyzing.load(Ordering::Relaxed)
     }
 }
 
