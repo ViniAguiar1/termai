@@ -21,3 +21,7 @@ toml = "0.8"
 dirs = "6"
 log = "0.4"
 env_logger = "0.11"
+
+# Window icon decoding for non-macOS platforms (macOS uses the .icns bundle icon).
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+png = "0.17"
