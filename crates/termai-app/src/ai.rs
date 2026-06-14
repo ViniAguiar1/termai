@@ -34,6 +34,9 @@ pub enum AiMessage {
     NoSuggestion,
     Completion(String),
     NoCompletion,
+    /// A newer release is available: (version, download/release URL).
+    UpdateAvailable { version: String, url: String },
+    NoUpdate,
 }
 
 /// IPC client that manages the Go AI engine process and communicates via Unix socket.
@@ -159,6 +162,27 @@ impl AiClient {
         });
     }
 
+    /// Ask the AI engine (which has network access) whether a newer release
+    /// exists. Result arrives asynchronously via `poll` as an AiMessage.
+    pub fn check_update(&self, current_version: &str) {
+        let stream = match self.stream {
+            Some(ref s) => match s.try_clone() {
+                Ok(s) => s,
+                Err(_) => return,
+            },
+            None => return,
+        };
+        let request = format!(
+            "{{\"type\":\"update_check\",\"current_version\":{}}}",
+            json_escape(current_version)
+        );
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let msg = send_request(stream, &request).unwrap_or(AiMessage::NoUpdate);
+            let _ = tx.send(msg);
+        });
+    }
+
     /// Poll for a received suggestion (non-blocking).
     pub fn poll(&self) -> Option<AiMessage> {
         self.rx.try_recv().ok()
@@ -264,6 +288,12 @@ fn parse_response(json: &str) -> Option<AiMessage> {
     match resp_type.as_str() {
         "no_suggestion" => Some(AiMessage::NoSuggestion),
         "no_completion" => Some(AiMessage::NoCompletion),
+        "no_update" => Some(AiMessage::NoUpdate),
+        "update_available" => {
+            let version = extract_json_string(json, "version").unwrap_or_default();
+            let url = extract_json_string(json, "url").unwrap_or_default();
+            Some(AiMessage::UpdateAvailable { version, url })
+        }
         "completion" => {
             let completion = extract_json_string(json, "completion").unwrap_or_default();
             if completion.is_empty() {

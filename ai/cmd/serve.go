@@ -164,6 +164,13 @@ func handleConnection(conn net.Conn) {
 				continue
 			}
 			handleAutocomplete(encoder, req)
+
+		case "update_check":
+			var req UpdateCheckRequest
+			if err := json.Unmarshal(raw, &req); err != nil {
+				continue
+			}
+			handleUpdateCheck(encoder, req)
 		}
 	}
 }

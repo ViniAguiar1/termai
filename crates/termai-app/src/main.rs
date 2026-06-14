@@ -135,6 +135,8 @@ struct App {
     hovered_divider: Option<u64>,
     /// Last click time in the top title-bar strip, for double-click-to-zoom.
     last_top_click: Instant,
+    /// Whether we've already fired the one-shot startup update check.
+    update_checked: bool,
 }
 
 impl App {
@@ -172,6 +174,7 @@ impl App {
             dragging_divider: None,
             hovered_divider: None,
             last_top_click: Instant::now(),
+            update_checked: false,
         }
     }
 
@@ -1359,6 +1362,14 @@ impl ApplicationHandler for App {
                     self.check_for_errors();
                 }
 
+                // One-shot update check on first frame (engine has network access).
+                if !self.update_checked {
+                    self.update_checked = true;
+                    if let Some(ref ai_client) = self.ai_client {
+                        ai_client.check_update(env!("CARGO_PKG_VERSION"));
+                    }
+                }
+
                 // Poll AI client for suggestions and completions
                 if let Some(ref ai_client) = self.ai_client {
                     if let Some(msg) = ai_client.poll() {
@@ -1374,6 +1385,23 @@ impl ApplicationHandler for App {
                             ai::AiMessage::NoCompletion => {
                                 self.pending_autocomplete = None;
                             }
+                            ai::AiMessage::UpdateAvailable { version, url } => {
+                                // Surface via the existing overlay: press 1 to open
+                                // the release page (the action runs `open <url>`).
+                                self.ai_overlay = Some(ai::AiSuggestion {
+                                    title: format!("Atualização disponível: v{version}"),
+                                    description:
+                                        "Pressione 1 para abrir a página de download."
+                                            .to_string(),
+                                    actions: vec![ai::AiAction {
+                                        label: "Abrir página de download".to_string(),
+                                        command: format!("open {url}"),
+                                        risk: "low".to_string(),
+                                    }],
+                                    created: Instant::now(),
+                                });
+                            }
+                            ai::AiMessage::NoUpdate => {}
                         }
                     }
                 }
