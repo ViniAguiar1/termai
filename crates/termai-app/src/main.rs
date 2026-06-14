@@ -155,9 +155,12 @@ impl App {
     }
 
     fn tab_bar_pixel_height(&self) -> f32 {
-        // Strip is always present so the chrome reads as part of the window
-        // (and on macOS the traffic-lights row needs to clear the content).
-        theme::tokens::TAB_STRIP_HEIGHT + theme::tokens::TAB_STRIP_BORDER
+        // Strip is always present so the chrome reads as part of the window.
+        // On macOS the strip also absorbs the title-bar reserve so traffic
+        // lights sit ABOVE the tabs row rather than overlapping content.
+        theme::tokens::TITLE_BAR_RESERVE
+            + theme::tokens::TAB_STRIP_HEIGHT
+            + theme::tokens::TAB_STRIP_BORDER
     }
 
     /// Return the effective cursor style, giving the user config priority over

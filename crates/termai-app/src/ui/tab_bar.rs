@@ -34,11 +34,12 @@ pub fn layout_tabs(
 
     let mut out = Vec::with_capacity(tab_count);
     let mut x = traffic_lights_reserve;
+    let tab_y = tokens::TITLE_BAR_RESERVE;
     for i in 0..tab_count {
         out.push(TabRect {
             index: i,
             x,
-            y: 0.0,
+            y: tab_y,
             w: per_tab,
             h: strip_height,
         });
@@ -73,12 +74,14 @@ pub fn render_tab_bar(
     main_vertices: &mut Vec<Vertex>,
     chrome_vertices: &mut Vec<Vertex>,
 ) {
-    // 1. Strip background.
+    let strip_total_h = tokens::TITLE_BAR_RESERVE + tokens::TAB_STRIP_HEIGHT;
+
+    // 1. Strip background (covers the title-bar reserve AND the tab row).
     renderer.build_rect(
         0.0,
         0.0,
         input.strip_width,
-        tokens::TAB_STRIP_HEIGHT,
+        strip_total_h,
         tokens::CHROME_BG,
         main_vertices,
     );
@@ -86,7 +89,7 @@ pub fn render_tab_bar(
     // 2. Bottom border of the strip.
     renderer.build_rect(
         0.0,
-        tokens::TAB_STRIP_HEIGHT,
+        strip_total_h,
         input.strip_width,
         tokens::TAB_STRIP_BORDER,
         tokens::CHROME_BORDER,
@@ -187,13 +190,15 @@ mod tests {
     #[test]
     fn hit_test_returns_correct_index() {
         let tabs = layout_tabs(3, 1000.0, 36.0, 78.0);
-        // Click in middle of tab 1
+        // Click in middle of tab 1 — y must fall inside the tab row, which
+        // starts at TITLE_BAR_RESERVE on macOS / 0 elsewhere.
         let mid_x = tabs[1].x + tabs[1].w / 2.0;
-        assert_eq!(hit_test(&tabs, mid_x, 18.0), Some(1));
-        // Click in traffic lights reserve area
-        assert_eq!(hit_test(&tabs, 40.0, 18.0), None);
-        // Click below strip
-        assert_eq!(hit_test(&tabs, mid_x, 100.0), None);
+        let mid_y = tabs[1].y + tabs[1].h / 2.0;
+        assert_eq!(hit_test(&tabs, mid_x, mid_y), Some(1));
+        // Click in traffic lights reserve area (left of all tabs)
+        assert_eq!(hit_test(&tabs, 40.0, mid_y), None);
+        // Click well below the strip
+        assert_eq!(hit_test(&tabs, mid_x, tabs[1].y + tabs[1].h + 50.0), None);
     }
 
     #[test]
