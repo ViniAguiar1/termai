@@ -187,15 +187,7 @@ impl App {
     }
 
     fn search_bar_pixel_height(&self) -> f32 {
-        if self.search.is_none() {
-            return 0.0;
-        }
-        if let Some(ref renderer) = self.renderer {
-            let (_, ch) = renderer.cell_size();
-            ch + 4.0
-        } else {
-            0.0
-        }
+        0.0
     }
 
     fn content_area(&self) -> (f32, f32, f32, f32) {
@@ -249,13 +241,6 @@ impl App {
             && pane.terminal.scroll_offset == 0;
         let cursor_alpha = if cursor_shown { self.cursor_opacity() } else { 0.0 };
 
-        // Build set of search-highlighted cells for this pane
-        let search_highlight: Option<&SearchState> = if is_focused {
-            self.search.as_ref().filter(|s| !s.query.is_empty())
-        } else {
-            None
-        };
-
         visible
             .iter()
             .enumerate()
@@ -268,27 +253,6 @@ impl App {
 
                         if cell.inverse {
                             std::mem::swap(&mut fg, &mut bg);
-                        }
-
-                        // Search highlighting
-                        if let Some(ref search) = search_highlight {
-                            let qlen = search.query.len();
-                            for (mi, &(abs_row, abs_col)) in search.matches.iter().enumerate() {
-                                if let Some(vis_row) = pane.terminal.abs_row_to_visible(abs_row) {
-                                    if vis_row == row_idx && col_idx >= abs_col && col_idx < abs_col + qlen {
-                                        if mi == search.current {
-                                            // Current match: bright orange
-                                            fg = [0.0, 0.0, 0.0, 1.0];
-                                            bg = [1.0, 0.6, 0.0, 1.0];
-                                        } else {
-                                            // Other matches: yellow
-                                            fg = [0.0, 0.0, 0.0, 1.0];
-                                            bg = [0.9, 0.9, 0.2, 1.0];
-                                        }
-                                        break;
-                                    }
-                                }
-                            }
                         }
 
                         // URL hover highlight
@@ -440,46 +404,6 @@ impl App {
             }
         }
         self.search_jump_to_current();
-    }
-
-    fn build_search_bar_cells(&self) -> Vec<Vec<RenderCell>> {
-        let search = match self.search {
-            Some(ref s) => s,
-            None => return vec![],
-        };
-        let renderer = match self.renderer {
-            Some(ref r) => r,
-            None => return vec![],
-        };
-
-        let (cols, _) = renderer.grid_size();
-        let bg = self.theme.search_bg();
-        let fg = self.theme.search_fg();
-        let mut row = vec![RenderCell { ch: ' ', fg, bg }; cols as usize];
-
-        // "Find: <query>  N/M"
-        let count_str = if search.matches.is_empty() {
-            if search.query.is_empty() { String::new() } else { "0/0".to_string() }
-        } else {
-            format!("{}/{}", search.current + 1, search.matches.len())
-        };
-
-        let label = format!(" Find: {}  {}", search.query, count_str);
-
-        for (i, ch) in label.chars().enumerate() {
-            if i >= cols as usize {
-                break;
-            }
-            row[i].ch = ch;
-        }
-
-        // Cursor position (blinking underscore after query)
-        let cursor_pos = 7 + search.query.len(); // " Find: " is 7 chars
-        if cursor_pos < cols as usize {
-            row[cursor_pos].bg = self.theme.cursor_bar();
-        }
-
-        vec![row]
     }
 
     /// Check if the focused pane's recent output contains an error pattern.
@@ -1319,7 +1243,6 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                let search_bar_cells = self.build_search_bar_cells();
                 let overlay_cells = self.build_ai_overlay_cells();
 
                 // Ghost text (autocomplete suggestion) data
@@ -1350,6 +1273,9 @@ impl ApplicationHandler for App {
                             .unwrap_or(80);
                         Some((sx, sy, ex, ey, pane_cols))
                     });
+
+                // Pre-compute values that require &self before we mutably borrow self.renderer
+                let tab_bar_h = self.tab_bar_pixel_height();
 
                 // Now borrow renderer mutably for vertex building
                 let renderer = self.renderer.as_mut().unwrap();
@@ -1509,10 +1435,45 @@ impl ApplicationHandler for App {
                     }
                 }
 
-                // Search bar
-                if !search_bar_cells.is_empty() {
-                    let search_y = cy + ch;
-                    renderer.build_vertices(&search_bar_cells, 0.0, search_y, &mut vertices);
+                // Search match highlights (alpha overlays)
+                if let Some(ref search) = self.search {
+                    if let Some(rect) = rects.iter().find(|r| r.id == focused_id) {
+                        let (cw_px, ch_px) = renderer.cell_size();
+                        let pane = find_pane_ref(&tab.root, focused_id);
+                        let qlen = search.query.chars().count() as f32;
+                        for (mi, &(abs_row, abs_col)) in search.matches.iter().enumerate() {
+                            if let Some(p) = pane {
+                                if let Some(vis_row) = p.terminal.abs_row_to_visible(abs_row) {
+                                    let alpha = if mi == search.current {
+                                        theme::tokens::SEARCH_CURRENT_MATCH_ALPHA
+                                    } else {
+                                        theme::tokens::SEARCH_MATCH_ALPHA
+                                    };
+                                    let color = theme::tokens::with_alpha(theme::tokens::ACCENT, alpha);
+                                    renderer.build_rect(
+                                        rect.x + abs_col as f32 * cw_px,
+                                        rect.y + vis_row as f32 * ch_px,
+                                        qlen * cw_px,
+                                        ch_px,
+                                        color,
+                                        &mut vertices,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Floating search bar (top-right, over content)
+                if let Some(ref search) = self.search {
+                    let input = ui::search_bar::SearchBarInput {
+                        query: &search.query,
+                        match_count: search.matches.len(),
+                        current_match: search.current,
+                        strip_width: renderer.width() as f32,
+                        content_top: tab_bar_h,
+                    };
+                    ui::search_bar::render(&input, renderer, &mut vertices, &mut chrome_vertices);
                 }
 
                 // AI suggestion overlay
