@@ -34,7 +34,20 @@ impl PtySession {
 
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
         let mut cmd = CommandBuilder::new(&shell);
-        cmd.cwd(std::env::current_dir().unwrap_or_else(|_| "/".into()));
+        // Launch as a login shell so the login init files run — /etc/zprofile
+        // (path_helper, /etc/paths.d), ~/.zprofile, ~/.zlogin — matching
+        // Terminal.app. Without `-l`, tools that are only put on PATH for login
+        // shells (e.g. Homebrew's `brew`) are missing, and ~/.zshrc lines that
+        // depend on them fail on every launch.
+        cmd.arg("-l");
+        // Start in the user's home directory on a GUI launch (current_dir is "/"
+        // then); honor the launch directory when started from a CLI in a project.
+        let cwd = std::env::current_dir()
+            .ok()
+            .filter(|p| p.to_str() != Some("/"))
+            .or_else(|| std::env::var_os("HOME").map(std::path::PathBuf::from))
+            .unwrap_or_else(|| "/".into());
+        cmd.cwd(cwd);
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
 
