@@ -251,6 +251,42 @@ pub fn render_tab_bar(
     }
 }
 
+/// Draw the focused pane's git branch right-aligned in the strip, just left of
+/// the connection indicator: a small accent dot followed by the branch name.
+#[allow(clippy::too_many_arguments)]
+pub fn render_branch(
+    branch: &str,
+    strip_width: f32,
+    scale: f32,
+    renderer: &mut Renderer,
+    shape_vertices: &mut Vec<Vertex>,
+    chrome_vertices: &mut Vec<Vertex>,
+) {
+    if branch.is_empty() {
+        return;
+    }
+    let strip_h = tokens::TAB_STRIP_HEIGHT * scale;
+    let (cw, ch) = renderer.chrome_cell_size();
+    let dot = (ch * 0.42).round();
+    let gap = 6.0 * scale;
+    let text_w = branch.chars().count() as f32 * cw;
+    let total = dot + gap + text_w;
+
+    // Right edge sits left of the connection indicator with a little padding.
+    let indicator_reserve = (tokens::CONNECTION_INDICATOR_SIZE
+        + tokens::CONNECTION_INDICATOR_RIGHT_PAD)
+        * scale;
+    let right_edge = strip_width - indicator_reserve - 10.0 * scale;
+    let start_x = right_edge - total;
+
+    let dot_y = (strip_h - dot) / 2.0;
+    renderer.build_rect(start_x, dot_y, dot, dot, tokens::ACCENT, shape_vertices);
+
+    let text_x = start_x + dot + gap;
+    let text_y = (strip_h - ch) / 2.0;
+    renderer.build_chrome_text_run(branch, text_x, text_y, tokens::TEXT_MUTED, chrome_vertices);
+}
+
 fn interpolate(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
     let t = t.clamp(0.0, 1.0);
     [

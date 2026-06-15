@@ -63,6 +63,12 @@ impl PtySession {
         self.writer.flush()
     }
 
+    /// PID of the spawned shell, if the platform exposes it. Used to query the
+    /// shell's current working directory.
+    pub fn process_id(&self) -> Option<u32> {
+        self._child.process_id()
+    }
+
     /// Resize the PTY to the given dimensions.
     pub fn resize(&self, cols: u16, rows: u16) -> anyhow::Result<()> {
         self.master.resize(PtySize {

@@ -1,10 +1,12 @@
 mod ai;
 mod colors;
 mod config;
+mod git_info;
 mod history;
 #[cfg(target_os = "macos")]
 mod macos_menu;
 mod pane;
+mod proc_info;
 mod tab;
 mod theme;
 mod ui;
@@ -149,6 +151,9 @@ struct App {
     /// removes the menu). `None` until the window/NSApp exists.
     #[cfg(target_os = "macos")]
     menu: Option<muda::Menu>,
+    /// Cached git branch for the focused pane's cwd: (cwd, branch, computed_at).
+    /// Recomputed when the cwd changes or the entry goes stale.
+    git_cache: Option<(std::path::PathBuf, Option<String>, Instant)>,
 }
 
 impl App {
@@ -191,6 +196,7 @@ impl App {
             history: history::CommandHistory::load(),
             #[cfg(target_os = "macos")]
             menu: None,
+            git_cache: None,
         }
     }
 
@@ -224,11 +230,35 @@ impl App {
         theme::tokens::CURSOR_FADE_MIN + (1.0 - theme::tokens::CURSOR_FADE_MIN) * s
     }
 
+    /// Resolve a pane's working directory: the OS-reported shell cwd (tracks
+    /// `cd` without needing OSC 7), falling back to OSC 7 then the app's cwd.
+    fn pane_cwd(pane: &pane::Pane) -> Option<std::path::PathBuf> {
+        pane.pty
+            .process_id()
+            .and_then(proc_info::pid_cwd)
+            .or_else(|| pane.terminal.cwd.clone())
+    }
+
+    /// Git branch for the focused pane's cwd, cached so we don't hit the
+    /// filesystem every frame. Recomputed when the cwd changes or after 2s
+    /// (so a `git checkout` in the shell is reflected without a cwd change).
+    fn focused_branch(&mut self) -> Option<String> {
+        let cwd = self.find_focused_pane_ref().and_then(Self::pane_cwd)?;
+        if let Some((cached_cwd, branch, at)) = &self.git_cache {
+            if *cached_cwd == cwd && at.elapsed() < Duration::from_secs(2) {
+                return branch.clone();
+            }
+        }
+        let branch = git_info::branch(&cwd);
+        self.git_cache = Some((cwd, branch.clone(), Instant::now()));
+        branch
+    }
+
     fn tab_titles(&self) -> Vec<String> {
         let home = dirs::home_dir();
         self.tab_bar.tabs.iter().map(|tab| {
             let cwd = find_pane_ref(&tab.root, tab.focused_pane_id)
-                .and_then(|p| p.terminal.cwd.clone())
+                .and_then(Self::pane_cwd)
                 .or_else(|| std::env::current_dir().ok());
             match cwd {
                 Some(p) => ui::path_shorten::shorten(p, home.as_deref(), 20),
@@ -1687,6 +1717,9 @@ impl ApplicationHandler for App {
 
                 // Build all cell data first (before borrowing renderer mutably)
                 let titles = self.tab_titles();
+                // Git branch for the focused pane (cached; cheap). Computed here,
+                // before the immutable self.tab_bar borrow below.
+                let focused_branch = self.focused_branch().unwrap_or_default();
                 let strip_width_pre = self.renderer.as_ref().map(|r| r.width() as f32).unwrap_or(0.0);
                 let s = self.scale_factor;
                 // The strip always renders (it hosts tabs, action buttons, and
@@ -1798,6 +1831,14 @@ impl ApplicationHandler for App {
                         self.scale_factor,
                         renderer,
                         &mut vertices,
+                    );
+                    ui::tab_bar::render_branch(
+                        &focused_branch,
+                        strip_width,
+                        self.scale_factor,
+                        renderer,
+                        &mut vertices,
+                        &mut chrome_vertices,
                     );
 
                     {
