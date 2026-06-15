@@ -4,7 +4,7 @@ GPU-accelerated terminal emulator with built-in AI assistance.
 
 ## Status
 
-Active development. The terminal emulator is functional on macOS with GPU rendering, split panes, tabs, scrollback search, and AI-powered error analysis (Claude / OpenAI).
+Active development. The terminal emulator is functional on macOS with GPU rendering, split panes, tabs, scrollback search, instant autocomplete, a native menu bar, and AI-powered error analysis (Claude / OpenAI).
 
 ## Goal
 
@@ -28,7 +28,12 @@ Build a fast, cross-platform terminal emulator that can:
 - JetBrains Mono embedded font with HiDPI/Retina support
 - ANSI color support (16 colors, 256-color, truecolor RGB)
 - Split panes (vertical/horizontal) with independent PTYs
-- Tabs with tab bar and click-to-switch
+- Tabs with tab bar, click-to-switch, and new-tab / split buttons in the strip
+- Working directory and git branch shown in the tab strip
+- Native macOS menu bar (App, Terminal, Edit, View, AI, Window, Help)
+- Instant autocomplete: history-based ghost text (local, zero-latency), with an LLM fallback — accept with Tab or →
+- Clickable URLs (Cmd+click to open)
+- Launches a login shell (sources `~/.zprofile`, etc.), matching Terminal.app
 - Blinking cursor with style support (block, underline, bar)
 - Scrollback buffer (10k lines) with mouse wheel and keyboard scrolling
 - Text selection with mouse + Cmd+C/Cmd+V clipboard
@@ -71,6 +76,10 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 export OPENAI_API_KEY="sk-..."
 ```
 
+Alternatively, set the provider and key in the config file (see the `[ai]`
+section under [Config](#config)). Error analysis uses Claude Sonnet; the
+instant autocomplete uses Claude Haiku for low latency.
+
 When a command fails, the AI overlay appears automatically with suggestions. Press 1-9 to execute an action, Escape to dismiss.
 
 ## Keyboard Shortcuts
@@ -83,6 +92,7 @@ When a command fails, the AI overlay appears automatically with suggestions. Pre
 | Cmd+T | New tab |
 | Cmd+W | Close pane/tab |
 | Cmd+1-9 | Switch tabs |
+| Tab / → | Accept autocomplete suggestion |
 | Cmd++ / Cmd+- | Zoom in/out |
 | Cmd+0 | Reset zoom |
 | Cmd+C | Copy selection |
@@ -112,6 +122,11 @@ scrollback_lines = 10000
 [theme]
 background = "#121216"
 foreground = "#ccccce"
+
+# Optional — AI provider/key (an alternative to the env vars above).
+[ai]
+provider = "anthropic"   # "anthropic" or "openai"
+api_key = "sk-ant-..."
 ```
 
 ## Tests
@@ -149,7 +164,5 @@ MIT License. See [LICENSE](LICENSE).
 ## Next Steps
 
 - Cross-platform testing (Linux, Windows)
-- AI autocompletion (command suggestions based on context)
 - Themes support (Dracula, Catppuccin, etc.)
 - Ligatures and Nerd Font icons
-- Clickable URLs (Cmd+click to open)
